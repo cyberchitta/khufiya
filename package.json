@@ -1,0 +1,11 @@
+{
+  "name": "khufiya",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "fetch-pc-stats": "bun scripts/fetch-privacy-coin-stats.js"
+  },
+  "dependencies": {
+    "gray-matter": "^4.0.3"
+  }
+}
