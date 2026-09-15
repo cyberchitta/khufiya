@@ -83,6 +83,11 @@ async function fetchJson(url, headers = {}) {
   return JSON.parse(await fetchText(url, headers));
 }
 
+// Every [FAIL] lands here, so the closing summary can't miss one. A skipped
+// source (skip()) also returns null but is not a failure, which is why the
+// summary can't just count null results.
+const failedSources = [];
+
 async function safe(label, fn) {
   try {
     const result = await fn();
@@ -90,6 +95,7 @@ async function safe(label, fn) {
     return result;
   } catch (error) {
     console.error(`[FAIL] ${label}: ${error.message}`);
+    failedSources.push(label);
     return null;
   }
 }
@@ -524,7 +530,10 @@ async function main() {
 
   await fs.mkdir(path.join(RAW_DIR, folder), { recursive: true });
   const datedFolders = (await fs.readdir(RAW_DIR)).filter((name) => /^\d{6}$/.test(name)).sort();
-  const prevFolder = datedFolders.filter((name) => name !== folder).pop() ?? null;
+  // History is read from the latest earlier folder. On a same-day rerun the first
+  // run has already deleted that folder, so today's folder is the history: falling
+  // back to null would merge fresh suffixes onto nothing and drop unfetched series.
+  const prevFolder = datedFolders.filter((name) => name !== folder).pop() ?? folder;
 
   const [
     x402AllTime,
@@ -785,7 +794,7 @@ async function main() {
       Object.fromEntries(Object.entries(onchainPrivacyTvl).map(([slug, series]) => [slug, last(series)?.[1]])),
   };
 
-  const snapshots = await readExisting(prevFolder ?? folder, 'snapshots.json', { snapshots: [] });
+  const snapshots = await readExisting(prevFolder, 'snapshots.json', { snapshots: [] });
   snapshots.snapshots = snapshots.snapshots.filter((entry) => entry.date !== today);
   snapshots.snapshots.push(snapshot);
   snapshots.snapshots.sort((a, b) => a.date.localeCompare(b.date));
@@ -800,20 +809,8 @@ async function main() {
   console.log(`Wrote src/_data/pcStats.json (folder: ${folder})`);
   await stampArticleRefresh(today);
 
-  const failures = [
-    x402AllTime,
-    x402Series,
-    moneroChain,
-    zcashChain,
-    market,
-    zcashSeries,
-    moneroSeries,
-    marketSeries,
-    stablecoinSeries,
-    onchainPrivacyTvl,
-  ].filter((result) => result === null).length;
-  if (failures) {
-    console.warn(`Done with ${failures} failed source(s) — see [FAIL] lines above`);
+  if (failedSources.length) {
+    console.warn(`Done with ${failedSources.length} failed source(s): ${failedSources.join('; ')}`);
   } else {
     console.log('Done — all sources fetched');
   }
