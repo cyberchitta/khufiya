@@ -2,6 +2,7 @@ import { promises as fs } from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import matter from 'gray-matter';
+import { fetchEthFrozenValue } from './eth-frozen-value.js';
 
 // Fetches the tracked statistics for the privacy-coins-ai-money prediction
 // tracker page. All sources are free/keyless. Each fetcher is fail-soft: a
@@ -50,8 +51,9 @@ import matter from 'gray-matter';
 //                         privacy-flows: per-protocol per-month stablecoin
 //                         turnover (railgun suffix + repo-cached prefix; tornado
 //                         + PP full). base-freeze: USDC Blacklisted events on
-//                         Base. blacklist: USDC/USDT mainnet blacklist counts
-//                         (monthly) + frozen-value snapshot.
+//                         Base. blacklist: USDC/USDT blacklist counts (monthly,
+//                         Dune) + Ethereum frozen-value snapshot (on-chain,
+//                         keyless — see eth-frozen-value.js).
 //                         See _notes/DUNE-SETUP.md
 //
 // The event timeline is hand-curated as a markdown table in the article
@@ -62,6 +64,7 @@ import matter from 'gray-matter';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SITE_DIR = path.resolve(process.env.SITE_DIR || path.join(__dirname, '..', '..', 'www.cyberchitta.cc'));
 const DATA_DIR = path.join(__dirname, '..', 'data');
+const ETH_BLACKLIST_CACHE = path.join(__dirname, '..', 'cache', 'eth-stablecoin-blacklist.json');
 const PRIVACY_DIR = path.join(SITE_DIR, 'src', 'assets', 'data', 'privacy-coins');
 const RAW_DIR = path.join(PRIVACY_DIR, 'raw');
 const POINTER_FILE = path.join(SITE_DIR, 'src', '_data', 'pcStats.json');
@@ -356,12 +359,11 @@ const DUNE_QUERIES = {
   // Taint backdrop (§7). Counts = monthly new blacklisted/frozen addresses,
   // summed across chains (blacklisting is per-contract-per-chain). Eth carries
   // both stablecoins; Tron carries USDT (~71% of all-time USDT freezes); Solana
-  // freezes token accounts via SPL FreezeAccount (tiny by count). Value =
-  // current frozen-balance snapshot, Ethereum-only (multi-chain balances hard).
+  // freezes token accounts via SPL FreezeAccount (tiny by count). Frozen value
+  // is read on-chain now (eth-frozen-value.js), not from Dune.
   blacklistCounts: 7714982, // FULL, Ethereum USDC+USDT (dune-blacklist-counts.sql)
   usdtTronBlacklist: 7715354, // FULL, Tron USDT (usdt-tron-blacklist.sql)
   stablecoinSolanaFreezes: 7715332, // FULL, Solana USDC+USDT (stablecoin-solana-freezes.sql)
-  blacklistValue: 7714984, // SNAPSHOT, Ethereum (dune-blacklist-value.sql)
 };
 
 // Reads cached results only (no execute) — execution is unavailable on the
@@ -513,8 +515,10 @@ function last(series) {
 async function stampArticleRefresh(date) {
   try {
     const parsed = matter(await fs.readFile(ARTICLE_FILE, 'utf8'), { preserve: true });
-    const updates = (parsed.data.updates || []).filter((u) => u.date !== date);
-    updates.push({ date, note: 'Tracker data refreshed' });
+    // A note already written for this date (e.g. what a refresh changed) is kept,
+    // not replaced by the generic stamp.
+    const updates = parsed.data.updates || [];
+    if (!updates.some((u) => u.date === date)) updates.push({ date, note: 'Tracker data refreshed' });
     parsed.data.updates = updates;
     await fs.writeFile(ARTICLE_FILE, matter.stringify(parsed.content, parsed.data));
     console.log(`Stamped refresh date ${date} into ${path.relative(path.join(__dirname, '..'), ARTICLE_FILE)}`);
@@ -554,7 +558,7 @@ async function main() {
     duneBlacklistCounts,
     duneUsdtTron,
     duneSolanaFreezes,
-    duneBlacklistValue,
+    ethFrozenValue,
   ] = await Promise.all([
     safe('x402scan all-time', () => fetchX402(0)),
     safe('x402scan trailing-30d', () => fetchX402(30)),
@@ -588,9 +592,7 @@ async function main() {
     DUNE_API_KEY && DUNE_QUERIES.stablecoinSolanaFreezes
       ? safe('dune stablecoin freezes (solana)', () => fetchDuneResults(DUNE_QUERIES.stablecoinSolanaFreezes))
       : skip('dune stablecoin freezes (solana)'),
-    DUNE_API_KEY && DUNE_QUERIES.blacklistValue
-      ? safe('dune blacklist frozen value', () => fetchDuneResults(DUNE_QUERIES.blacklistValue))
-      : skip('dune blacklist frozen value'),
+    safe('ethereum frozen value (on-chain)', () => fetchEthFrozenValue(ETH_BLACKLIST_CACHE)),
   ]);
 
   if (x402Series) {
@@ -703,12 +705,12 @@ async function main() {
 
   // Blacklist (taint backdrop, §7): counts = monthly new blacklisted/frozen
   // addresses summed across chains (full history → replace); value = current
-  // frozen-balance snapshot (Ethereum-only). Each part keeps the previous
-  // folder's copy if not fetched this run.
+  // frozen balance of still-blacklisted addresses (Ethereum-only, on-chain).
+  // Each part keeps the previous folder's copy if not fetched this run.
   const prevBlacklist = await readExisting(prevFolder, 'dune-blacklist.json', {});
   const blacklist = {
     source:
-      'Dune Analytics — stablecoin blacklist/freeze counts (USDT: Eth 7714982 + Tron 7715354 + Solana 7715332; USDC: Eth + Solana) and Ethereum frozen-value snapshot (7714984).',
+      'Dune Analytics — stablecoin blacklist/freeze counts (USDT: Eth 7714982 + Tron 7715354 + Solana 7715332; USDC: Eth + Solana); Ethereum frozen value read on-chain (balanceOf of still-blacklisted addresses).',
     fetchedAt: now,
   };
   if (duneBlacklistCounts || duneUsdtTron || duneSolanaFreezes) {
@@ -739,15 +741,8 @@ async function main() {
   } else if (prevBlacklist.counts) {
     blacklist.counts = prevBlacklist.counts;
   }
-  if (duneBlacklistValue) {
-    warnIfStale('blacklist value', duneBlacklistValue.executedAt);
-    const byToken = Object.fromEntries(
-      duneBlacklistValue.rows.map((r) => [
-        String(r.token).toLowerCase(),
-        { addresses: r.blacklisted_addresses, frozenUsd: r.frozen_usd },
-      ])
-    );
-    blacklist.value = { queryId: duneBlacklistValue.queryId, executedAt: duneBlacklistValue.executedAt, ...byToken };
+  if (ethFrozenValue) {
+    blacklist.value = ethFrozenValue;
   } else if (prevBlacklist.value) {
     blacklist.value = prevBlacklist.value;
   }

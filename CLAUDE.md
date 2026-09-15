@@ -12,6 +12,8 @@ comes from.
 - `scripts/fetch-privacy-coin-stats.js` — fetches every series, writes into the
   site repo. Runbook: the `private-canary-refresh` skill (`.claude/skills/`).
 - `data/` — hand-maintained series (Visa/UPI).
+- `cache/` — fetched history a refresh extends rather than re-scans; commit it
+  with the refresh.
 - `baselines/` — reference results an on-chain reader must reproduce.
 
 ## Working notes
