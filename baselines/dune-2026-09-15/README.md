@@ -20,6 +20,12 @@ result here month for month. SQL for each is in
 These are the only copy of the per-chain split: the site's `dune-blacklist.json`
 stores cross-chain sums.
 
+**Solana was dropped from the counts on 2026-09-16 (owner decision).** No
+keyless source serves its `FreezeAccount` history — the reasons are measured and
+recorded in the `private-canary-refresh` runbook. `stablecoinSolanaFreezes-7715332.json`
+was the only baseline that could have checked it, and it never returned a
+result. The published counts are now USDC: Ethereum; USDT: Ethereum + Tron.
+
 `june-2026-06-13-dune-blacklist.json` is the site file from the June refresh.
 It holds the last good frozen-value snapshot (USDC $120.2M / 587 addresses, USDT
 $1.60B / 2,962) and the cross-chain counts that included Solana. Solana's

@@ -49,7 +49,8 @@ bun run fetch-pc-stats        # scripts/fetch-privacy-coin-stats.js, run in khuf
 | **CoinGecko** keyless | current prices, mcaps, privacy-coins category, global (snapshot) | ~30/min, rate-limits on rapid reruns. **History capped at 365d** — why market history rides bitinfocharts |
 | **Coin Metrics** community API | `stablecoin-series.json` (USDT/USDC tx/day) | keyless; `usdt`/`usdc` are cross-chain aggregates; paginated `paging_from=start`, page cap as runaway guard |
 | **DefiLlama** `/protocol/<slug>` | `onchain-privacy-series.json` (TVL railgun/tornado-cash/privacy-pools) | keyless, full daily history |
-| **Dune Analytics** (8 queries) | `dune-privacy-flows.json`, `dune-base-freeze.json`, `dune-blacklist.json` | the complex one — see **Dune sub-layer** below |
+| **Dune Analytics** (3 queries, privacy-layer flows only) | `dune-privacy-flows.json` | the complex one — see **Dune sub-layer** below |
+| **on-chain readers** (keyless) | `dune-base-freeze.json`, `dune-blacklist.json` | Base + Ethereum via `evm-logs.js`, Tron via TronGrid; file names kept from the Dune era because they are the site's input contract |
 | **fiat rails** (hand-maintained seed) | `fiat-rails-series.json` (UPI monthly volume + Visa quarterly processed tx → the chart's "fiat ceiling") | **not fetched** — see **Fiat-rails baseline** below |
 
 `events.json` (the timeline) is **hand-curated, top-level, never written by the
@@ -88,7 +89,6 @@ All DuneSQL (Trino) — set the editor engine to DuneSQL, not legacy Spark/v1.
 | `railgunTurnover` | 7714782 | railgun turnover (recent) | `railgun-turnover-recent.sql` | flows railgun (suffix, `{{since}}`) |
 | `tornadoTurnover` | 7714895 | tornado turnover | `tornado-turnover.sql` | flows tornado (full) |
 | `privacyPools` | 7714910 | privacy pools turnover | `privacy-pools-turnover.sql` | flows privacyPools (full) |
-| `stablecoinSolanaFreezes` | 7715332 | stablecoin freezes (solana) | `stablecoin-solana-freezes.sql` | blacklist USDC+USDT (Solana) |
 
 **Per-query notes**
 
@@ -108,16 +108,32 @@ All DuneSQL (Trino) — set the editor engine to DuneSQL, not legacy Spark/v1.
   (the canary), not an error. History cached in `cache/base-usdc-blacklist.json`
   (commit it with the refresh). Base RPCs cap log ranges at 1–2k blocks, so a
   lost cache means a ~40-min rescan.
-- **Multi-chain blacklist** (Eth + Tron + Solana). Blacklisting is per-contract-
-  per-chain; Tron carries ~71% of all-time USDT freezes. Solana has no blacklist
-  mapping — it freezes token *accounts* via SPL `FreezeAccount` by mint (tiny by
-  count: ~21 USDC / 25 USDT; few-but-large). The fetch script's `sumMonthly()`
-  sums per-chain count columns: `counts.usdt = Eth + Tron + Solana`,
-  `counts.usdc = Eth + Solana` (Circle dropped Tron in 2024); `counts.chains`
-  records provenance. **Only Solana is still Dune** — a keyless run's totals are
-  short by Solana alone (~21 USDC / 25 USDT all-time), not by a whole chain.
-  **Frozen value is Ethereum-only** — so a quoted value is Eth-scope while the
-  count is multi-chain; phrase honestly.
+- **Multi-chain blacklist, now Eth + Tron only.** Blacklisting is per-contract-
+  per-chain; Tron carries ~71% of all-time USDT freezes. `counts.usdt =
+  Eth + Tron`, `counts.usdc = Eth` alone (Circle dropped Tron in 2024);
+  `counts.chains` records each chain's read head. **Both are required** — with
+  only two sources, one missing chain would publish a total short by most of it,
+  so a failure carries the previous total forward rather than writing a partial.
+  No Dune query feeds the blacklist any more. **Frozen value is Ethereum-only**
+  — so a quoted value is Eth-scope while the USDT count is two-chain; phrase
+  honestly.
+- **Solana is out of scope (owner decision, 2026-09-16)** — the counts are
+  Eth + Tron and the page should say so. It was ~21 USDC / ~25 USDT all-time
+  (~2% of the total), so dropping it moves the published count down slightly.
+  Why it cannot be rebuilt keylessly, measured 2026-09-16: Solana has no log
+  index, so there is no `eth_getLogs` equivalent — freezes are SPL
+  `FreezeAccount` instructions and must be found by walking an account's
+  transactions. Circle's freeze authority `7dGbd2QZ…` works (27 signatures, 17
+  freezes + 4 thaws, parsed cleanly) but the public RPC serves **nothing before
+  2024-08-20**, and 7 of the 21 USDC freezes predate that. Tether's freeze
+  authority `Q6Xprfk…` is not a dedicated key: its most recent 1,000 signatures
+  span **seven weeks** (2026-07-12 → 2026-08-31) with zero freezes in the first
+  340 parsed, so reaching 2020 means paging hundreds of thousands of
+  transactions at the ~1.4 tx/s the public RPC tolerates. Every keyless
+  alternative (Helius, Solscan, SolanaFM, Flipside) needs an API key, which the
+  no-paid-source constraint forbids. `stablecoin-solana-freezes.sql` and 7715332
+  are kept only as history — and 7715332 never returned a result anyway
+  (2-minute timeout, the `FAILED` file in `baselines/`).
 - **Ethereum blacklist is on-chain, not Dune**
   (`scripts/eth-stablecoin-blacklist.js`, keyless): one scan of the add/remove
   events feeds both the monthly counts (replacing 7714982) and `balanceOf` of
