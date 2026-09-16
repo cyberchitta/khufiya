@@ -3,6 +3,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import matter from 'gray-matter';
 import { fetchEthFrozenValue } from './eth-frozen-value.js';
+import { fetchBaseFreezes } from './base-usdc-freezes.js';
 
 // Fetches the tracked statistics for the privacy-coins-ai-money prediction
 // tracker page. All sources are free/keyless. Each fetcher is fail-soft: a
@@ -51,9 +52,10 @@ import { fetchEthFrozenValue } from './eth-frozen-value.js';
 //                         privacy-flows: per-protocol per-month stablecoin
 //                         turnover (railgun suffix + repo-cached prefix; tornado
 //                         + PP full). base-freeze: USDC Blacklisted events on
-//                         Base. blacklist: USDC/USDT blacklist counts (monthly,
-//                         Dune) + Ethereum frozen-value snapshot (on-chain,
-//                         keyless — see eth-frozen-value.js).
+//                         Base (on-chain, keyless — base-usdc-freezes.js).
+//                         blacklist: USDC/USDT blacklist counts (monthly, Dune)
+//                         + Ethereum frozen-value snapshot (on-chain, keyless —
+//                         eth-frozen-value.js).
 //                         See _notes/DUNE-SETUP.md
 //
 // The event timeline is hand-curated as a markdown table in the article
@@ -65,6 +67,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SITE_DIR = path.resolve(process.env.SITE_DIR || path.join(__dirname, '..', '..', 'www.cyberchitta.cc'));
 const DATA_DIR = path.join(__dirname, '..', 'data');
 const ETH_BLACKLIST_CACHE = path.join(__dirname, '..', 'cache', 'eth-stablecoin-blacklist.json');
+const BASE_FREEZE_CACHE = path.join(__dirname, '..', 'cache', 'base-usdc-blacklist.json');
 const PRIVACY_DIR = path.join(SITE_DIR, 'src', 'assets', 'data', 'privacy-coins');
 const RAW_DIR = path.join(PRIVACY_DIR, 'raw');
 const POINTER_FILE = path.join(SITE_DIR, 'src', '_data', 'pcStats.json');
@@ -348,7 +351,6 @@ const DUNE_STALE_AFTER_DAYS = 45;
 // Query ids are public (not secrets) → version-controlled here. All ours now;
 // see .claude/skills/private-canary-refresh/queries/ and _notes/DUNE-SETUP.md.
 const DUNE_QUERIES = {
-  baseFreeze: 7714703, // USDC Blacklisted events on Base (dune-base-usdc-freezes.sql)
   // Privacy-layer flows — per-month stablecoin turnover. Railgun returns only a
   // recent SUFFIX (heavy → prefix cached in repo, seeded once from @amlbot's
   // 6702283 de-cumulated); Tornado + PP return FULL history (cheap). mergeMonthly
@@ -554,7 +556,7 @@ async function main() {
     duneRailgun,
     duneTornado,
     dunePrivacyPools,
-    duneBaseFreeze,
+    baseFreezes,
     duneBlacklistCounts,
     duneUsdtTron,
     duneSolanaFreezes,
@@ -580,9 +582,7 @@ async function main() {
     DUNE_API_KEY && DUNE_QUERIES.privacyPools
       ? safe('dune privacy pools turnover', () => fetchDuneResults(DUNE_QUERIES.privacyPools))
       : skip('dune privacy pools turnover'),
-    DUNE_API_KEY && DUNE_QUERIES.baseFreeze
-      ? safe('dune base usdc freezes', () => fetchDuneResults(DUNE_QUERIES.baseFreeze))
-      : skip('dune base usdc freezes'),
+    safe('base usdc freezes (on-chain)', () => fetchBaseFreezes(BASE_FREEZE_CACHE)),
     DUNE_API_KEY && DUNE_QUERIES.blacklistCounts
       ? safe('dune blacklist counts (eth)', () => fetchDuneResults(DUNE_QUERIES.blacklistCounts))
       : skip('dune blacklist counts (eth)'),
@@ -691,13 +691,12 @@ async function main() {
     await carryForward(prevFolder, folder, 'dune-privacy-flows.json');
   }
 
-  if (duneBaseFreeze) {
+  if (baseFreezes) {
+    // File name kept from the Dune era: it is the site's input contract.
     await writeData(folder, 'dune-base-freeze.json', {
-      source: `Dune Analytics query ${duneBaseFreeze.queryId} — USDC Blacklisted events on Base (custom)`,
+      source: 'Base chain — USDC (0x8335…2913) Blacklisted events, read on-chain',
       fetchedAt: now,
-      executedAt: duneBaseFreeze.executedAt,
-      columns: duneBaseFreeze.columns,
-      rows: duneBaseFreeze.rows,
+      ...baseFreezes,
     });
   } else {
     await carryForward(prevFolder, folder, 'dune-base-freeze.json');

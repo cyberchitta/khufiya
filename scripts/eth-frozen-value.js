@@ -1,4 +1,4 @@
-import { promises as fs } from 'fs';
+import { hex, makeRpc, scanLogs, readCache as readEventCache, writeCache } from './evm-logs.js';
 
 // Ethereum frozen stablecoin value, read from the chain — replaces Dune query
 // 7714984. An address counts while it is still blacklisted (add/remove events
@@ -16,7 +16,7 @@ import { promises as fs } from 'fs';
 
 // Keyless public gateway: 2M-block getLogs ranges and archive eth_call. Any
 // other endpoint works via ETH_RPC_URL (narrower ranges are split on error).
-const RPC_URL = process.env.ETH_RPC_URL || 'https://gateway.tenderly.co/public/mainnet';
+const rpc = makeRpc(process.env.ETH_RPC_URL || 'https://gateway.tenderly.co/public/mainnet');
 const MULTICALL3 = '0xca11bde05977b3631167028862be2a173976ca11';
 const CONFIRMATIONS = 64;
 const SCAN_FROM = 4_634_748; // USDT deployment; USDC came later
@@ -41,46 +41,7 @@ const TOKENS = {
   },
 };
 
-const hex = (n) => '0x' + n.toString(16);
 const word = (n) => BigInt(n).toString(16).padStart(64, '0');
-
-async function rpc(method, params) {
-  for (let attempt = 0; ; attempt++) {
-    try {
-      const res = await fetch(RPC_URL, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
-        signal: AbortSignal.timeout(60000),
-      });
-      if (!res.ok) throw new Error(`${method} returned ${res.status}`);
-      const body = await res.json();
-      if (body.error) throw Object.assign(new Error(`${method}: ${JSON.stringify(body.error).slice(0, 160)}`), { rpc: true });
-      return body.result;
-    } catch (error) {
-      // An RPC-level error (e.g. range too wide) is the caller's to handle; a
-      // transport error or 429 is retried with backoff.
-      if (error.rpc || attempt >= 5) throw error;
-      await new Promise((resolve) => setTimeout(resolve, 1000 * 2 ** attempt));
-    }
-  }
-}
-
-async function getLogs(fromBlock, toBlock) {
-  const filter = {
-    address: Object.values(TOKENS).map((t) => t.contract),
-    topics: [Object.values(TOKENS).flatMap((t) => [t.add, t.remove])],
-    fromBlock: hex(fromBlock),
-    toBlock: hex(toBlock),
-  };
-  try {
-    return await rpc('eth_getLogs', [filter]);
-  } catch (error) {
-    if (!error.rpc || toBlock - fromBlock < 1000) throw error;
-    const mid = Math.floor((fromBlock + toBlock) / 2);
-    return [...(await getLogs(fromBlock, mid)), ...(await getLogs(mid + 1, toBlock))];
-  }
-}
 
 // Log → [block, logIndex, token, address, 1 = added | 0 = removed]
 function toEvent(log) {
@@ -89,28 +50,17 @@ function toEvent(log) {
   return [parseInt(log.blockNumber, 16), parseInt(log.logIndex, 16), name, '0x' + raw.slice(-40).toLowerCase(), log.topics[0] === token.add ? 1 : 0];
 }
 
-export async function readCache(file) {
-  try {
-    return JSON.parse(await fs.readFile(file, 'utf8'));
-  } catch {
-    return { scannedThrough: SCAN_FROM - 1, events: [] };
-  }
-}
-
-// One event per line, so a refresh's diff shows exactly the events it added.
-export async function writeCache(file, cache) {
-  const lines = cache.events.map((e) => JSON.stringify(e)).join(',\n');
-  await fs.writeFile(file, `{"scannedThrough":${cache.scannedThrough},"events":[\n${lines}\n]}\n`);
-}
+export const readCache = (file) => readEventCache(file, SCAN_FROM);
+export { writeCache };
 
 // Extend the cached event history through `toBlock`. Pure: returns a new cache.
 export async function scanEvents(cache, toBlock) {
-  const events = [...cache.events];
-  for (let from = cache.scannedThrough + 1; from <= toBlock; from += LOG_SPAN) {
-    const logs = await getLogs(from, Math.min(from + LOG_SPAN - 1, toBlock));
-    events.push(...logs.filter((log) => !log.removed).map(toEvent));
-  }
-  events.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  const filter = {
+    address: Object.values(TOKENS).map((t) => t.contract),
+    topics: [Object.values(TOKENS).flatMap((t) => [t.add, t.remove])],
+  };
+  const logs = await scanLogs(rpc, filter, cache.scannedThrough + 1, toBlock, { span: LOG_SPAN });
+  const events = [...cache.events, ...logs.map(toEvent)].sort((a, b) => a[0] - b[0] || a[1] - b[1]);
   return { scannedThrough: Math.max(cache.scannedThrough, toBlock), events };
 }
 

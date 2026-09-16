@@ -85,7 +85,6 @@ All DuneSQL (Trino) — set the editor engine to DuneSQL, not legacy Spark/v1.
 
 | key | id | Dune name | queries/ file | feeds |
 |---|---|---|---|---|
-| `baseFreeze` | 7714703 | base usdc freezes | `base-usdc-freezes.sql` | base-freeze events → §7 Base line + "352 since Aug 2023" |
 | `railgunTurnover` | 7714782 | railgun turnover (recent) | `railgun-turnover-recent.sql` | flows railgun (suffix, `{{since}}`) |
 | `tornadoTurnover` | 7714895 | tornado turnover | `tornado-turnover.sql` | flows tornado (full) |
 | `privacyPools` | 7714910 | privacy pools turnover | `privacy-pools-turnover.sql` | flows privacyPools (full) |
@@ -106,8 +105,11 @@ All DuneSQL (Trino) — set the editor engine to DuneSQL, not legacy Spark/v1.
 - **Privacy Pools contracts unverified** (entrypoint `0x6818…6b46`, pool
   `0xf241…c9fb`) — coherent growth curve so likely right, but **confirm on
   Etherscan before publish**. Magnitude ~$27M lifetime.
-- **Base freeze** returns event rows (rolled up in `pcData.js`). 0 rows is a
-  *real* reading (the canary), not an error.
+- **Base freeze is on-chain, not Dune** (`scripts/base-usdc-freezes.js`,
+  keyless): event rows rolled up in `pcData.js`; 0 new rows is a *real* reading
+  (the canary), not an error. History cached in `cache/base-usdc-blacklist.json`
+  (commit it with the refresh). Base RPCs cap log ranges at 1–2k blocks, so a
+  lost cache means a ~40-min rescan.
 - **Multi-chain blacklist** (Eth + Tron + Solana). Blacklisting is per-contract-
   per-chain; Tron carries ~71% of all-time USDT freezes. Solana has no blacklist
   mapping — it freezes token *accounts* via SPL `FreezeAccount` by mint (tiny by
