@@ -88,8 +88,6 @@ All DuneSQL (Trino) — set the editor engine to DuneSQL, not legacy Spark/v1.
 | `railgunTurnover` | 7714782 | railgun turnover (recent) | `railgun-turnover-recent.sql` | flows railgun (suffix, `{{since}}`) |
 | `tornadoTurnover` | 7714895 | tornado turnover | `tornado-turnover.sql` | flows tornado (full) |
 | `privacyPools` | 7714910 | privacy pools turnover | `privacy-pools-turnover.sql` | flows privacyPools (full) |
-| `blacklistCounts` | 7714982 | blacklist counts (eth) | `blacklist-counts-eth.sql` | blacklist USDC+USDT (Ethereum) |
-| `usdtTronBlacklist` | 7715354 | usdt blacklist (tron) | `usdt-tron-blacklist.sql` | blacklist USDT (Tron) |
 | `stablecoinSolanaFreezes` | 7715332 | stablecoin freezes (solana) | `stablecoin-solana-freezes.sql` | blacklist USDC+USDT (Solana) |
 
 **Per-query notes**
@@ -116,15 +114,29 @@ All DuneSQL (Trino) — set the editor engine to DuneSQL, not legacy Spark/v1.
   count: ~21 USDC / 25 USDT; few-but-large). The fetch script's `sumMonthly()`
   sums per-chain count columns: `counts.usdt = Eth + Tron + Solana`,
   `counts.usdc = Eth + Solana` (Circle dropped Tron in 2024); `counts.chains`
-  records provenance. **Frozen value is Ethereum-only** — so a quoted value is
-  Eth-scope while the count is multi-chain; phrase honestly.
-- **Frozen value is on-chain, not Dune** (`scripts/eth-frozen-value.js`,
-  keyless): `balanceOf` of still-blacklisted addresses, event history cached in
-  `cache/eth-stablecoin-blacklist.json` (commit it with the refresh). Replaced
-  7714984, whose balance table kept USDT burned by `destroyBlackFunds` — June's
-  $1.60B was ~$718M high; `blacklist-value-eth.sql` is kept only as history.
-  `taint-watch` keeps Base USDC freezes as a separate line (not in the USDC
-  aggregate → no double-count).
+  records provenance. **Only Solana is still Dune** — a keyless run's totals are
+  short by Solana alone (~21 USDC / 25 USDT all-time), not by a whole chain.
+  **Frozen value is Ethereum-only** — so a quoted value is Eth-scope while the
+  count is multi-chain; phrase honestly.
+- **Ethereum blacklist is on-chain, not Dune**
+  (`scripts/eth-stablecoin-blacklist.js`, keyless): one scan of the add/remove
+  events feeds both the monthly counts (replacing 7714982) and `balanceOf` of
+  still-blacklisted addresses (replacing 7714984), so the two cannot disagree.
+  Event history cached in `cache/eth-stablecoin-blacklist.json` (commit it with
+  the refresh). Counts are ADD events, not distinct addresses — a re-blacklisted
+  address counts again and removals are not netted, which is what 7714982 did
+  and what the page's cumulative "ever blacklisted" figure means. 7714984's
+  balance table kept USDT burned by `destroyBlackFunds` — June's $1.60B was
+  ~$718M high; `blacklist-value-eth.sql` and `blacklist-counts-eth.sql` are kept
+  only as history. `taint-watch` keeps Base USDC freezes as a separate line (not
+  in the USDC aggregate → no double-count).
+- **Tron USDT blacklist is TronGrid, not Dune**
+  (`scripts/tron-usdt-blacklist.js`, keyless): Tron is not EVM-RPC, so
+  `evm-logs.js` does not apply — TronGrid's event API pages through a
+  `fingerprint` cursor and returns block timestamps inline. Replaced 7715354
+  (`usdt-tron-blacklist.sql` kept only as history). History cached in
+  `cache/tron-usdt-blacklist.json` (commit it with the refresh); a lost cache
+  costs a ~4-min reseed, not an hour.
 
 ## Fiat-rails baseline
 

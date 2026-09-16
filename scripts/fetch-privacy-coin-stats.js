@@ -2,7 +2,8 @@ import { promises as fs } from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import matter from 'gray-matter';
-import { fetchEthFrozenValue } from './eth-frozen-value.js';
+import { fetchEthBlacklist } from './eth-stablecoin-blacklist.js';
+import { fetchTronUsdtBlacklist } from './tron-usdt-blacklist.js';
 import { fetchBaseFreezes } from './base-usdc-freezes.js';
 
 // Fetches the tracked statistics for the privacy-coins-ai-money prediction
@@ -53,9 +54,10 @@ import { fetchBaseFreezes } from './base-usdc-freezes.js';
 //                         turnover (railgun suffix + repo-cached prefix; tornado
 //                         + PP full). base-freeze: USDC Blacklisted events on
 //                         Base (on-chain, keyless — base-usdc-freezes.js).
-//                         blacklist: USDC/USDT blacklist counts (monthly, Dune)
-//                         + Ethereum frozen-value snapshot (on-chain, keyless —
-//                         eth-frozen-value.js).
+//                         blacklist: USDC/USDT blacklist counts (monthly) +
+//                         Ethereum frozen-value snapshot. Ethereum both, on-chain
+//                         (eth-stablecoin-blacklist.js); Tron USDT via TronGrid
+//                         (tron-usdt-blacklist.js); Solana still Dune.
 //                         See _notes/DUNE-SETUP.md
 //
 // The event timeline is hand-curated as a markdown table in the article
@@ -68,6 +70,7 @@ const SITE_DIR = path.resolve(process.env.SITE_DIR || path.join(__dirname, '..',
 const DATA_DIR = path.join(__dirname, '..', 'data');
 const ETH_BLACKLIST_CACHE = path.join(__dirname, '..', 'cache', 'eth-stablecoin-blacklist.json');
 const BASE_FREEZE_CACHE = path.join(__dirname, '..', 'cache', 'base-usdc-blacklist.json');
+const TRON_BLACKLIST_CACHE = path.join(__dirname, '..', 'cache', 'tron-usdt-blacklist.json');
 const PRIVACY_DIR = path.join(SITE_DIR, 'src', 'assets', 'data', 'privacy-coins');
 const RAW_DIR = path.join(PRIVACY_DIR, 'raw');
 const POINTER_FILE = path.join(SITE_DIR, 'src', '_data', 'pcStats.json');
@@ -361,10 +364,9 @@ const DUNE_QUERIES = {
   // Taint backdrop (§7). Counts = monthly new blacklisted/frozen addresses,
   // summed across chains (blacklisting is per-contract-per-chain). Eth carries
   // both stablecoins; Tron carries USDT (~71% of all-time USDT freezes); Solana
-  // freezes token accounts via SPL FreezeAccount (tiny by count). Frozen value
-  // is read on-chain now (eth-frozen-value.js), not from Dune.
-  blacklistCounts: 7714982, // FULL, Ethereum USDC+USDT (dune-blacklist-counts.sql)
-  usdtTronBlacklist: 7715354, // FULL, Tron USDT (usdt-tron-blacklist.sql)
+  // freezes token accounts via SPL FreezeAccount (tiny by count). Ethereum
+  // (counts + frozen value) and Tron are read at source now; only Solana is
+  // still Dune, so a keyless run's cross-chain sums are short by Solana alone.
   stablecoinSolanaFreezes: 7715332, // FULL, Solana USDC+USDT (stablecoin-solana-freezes.sql)
 };
 
@@ -557,10 +559,9 @@ async function main() {
     duneTornado,
     dunePrivacyPools,
     baseFreezes,
-    duneBlacklistCounts,
-    duneUsdtTron,
     duneSolanaFreezes,
-    ethFrozenValue,
+    ethBlacklist,
+    tronBlacklist,
   ] = await Promise.all([
     safe('x402scan all-time', () => fetchX402(0)),
     safe('x402scan trailing-30d', () => fetchX402(30)),
@@ -583,16 +584,11 @@ async function main() {
       ? safe('dune privacy pools turnover', () => fetchDuneResults(DUNE_QUERIES.privacyPools))
       : skip('dune privacy pools turnover'),
     safe('base usdc freezes (on-chain)', () => fetchBaseFreezes(BASE_FREEZE_CACHE)),
-    DUNE_API_KEY && DUNE_QUERIES.blacklistCounts
-      ? safe('dune blacklist counts (eth)', () => fetchDuneResults(DUNE_QUERIES.blacklistCounts))
-      : skip('dune blacklist counts (eth)'),
-    DUNE_API_KEY && DUNE_QUERIES.usdtTronBlacklist
-      ? safe('dune usdt blacklist (tron)', () => fetchDuneResults(DUNE_QUERIES.usdtTronBlacklist))
-      : skip('dune usdt blacklist (tron)'),
     DUNE_API_KEY && DUNE_QUERIES.stablecoinSolanaFreezes
       ? safe('dune stablecoin freezes (solana)', () => fetchDuneResults(DUNE_QUERIES.stablecoinSolanaFreezes))
       : skip('dune stablecoin freezes (solana)'),
-    safe('ethereum frozen value (on-chain)', () => fetchEthFrozenValue(ETH_BLACKLIST_CACHE)),
+    safe('ethereum blacklist counts + frozen value (on-chain)', () => fetchEthBlacklist(ETH_BLACKLIST_CACHE)),
+    safe('tron usdt blacklist (trongrid)', () => fetchTronUsdtBlacklist(TRON_BLACKLIST_CACHE)),
   ]);
 
   if (x402Series) {
@@ -709,12 +705,10 @@ async function main() {
   const prevBlacklist = await readExisting(prevFolder, 'dune-blacklist.json', {});
   const blacklist = {
     source:
-      'Dune Analytics — stablecoin blacklist/freeze counts (USDT: Eth 7714982 + Tron 7715354 + Solana 7715332; USDC: Eth + Solana); Ethereum frozen value read on-chain (balanceOf of still-blacklisted addresses).',
+      'Stablecoin blacklist/freeze counts (USDT: Ethereum + Tron + Solana; USDC: Ethereum + Solana). Ethereum read on-chain, Tron via TronGrid, Solana from Dune 7715332. Ethereum frozen value read on-chain (balanceOf of still-blacklisted addresses).',
     fetchedAt: now,
   };
-  if (duneBlacklistCounts || duneUsdtTron || duneSolanaFreezes) {
-    warnIfStale('blacklist counts (eth)', duneBlacklistCounts?.executedAt);
-    warnIfStale('usdt blacklist (tron)', duneUsdtTron?.executedAt);
+  if (ethBlacklist || tronBlacklist || duneSolanaFreezes) {
     warnIfStale('stablecoin freezes (solana)', duneSolanaFreezes?.executedAt);
     // Per-contract-per-chain blacklisting → a token's true count is the
     // cross-chain sum. USDT: Eth + Tron + Solana; USDC: Eth + Solana (Circle
@@ -722,26 +716,26 @@ async function main() {
     // [skip]/[FAIL]/[STALE] lines flag it for the human-gated refresh.
     blacklist.counts = {
       chains: {
-        ethereum: duneBlacklistCounts?.queryId ?? null,
-        tron: duneUsdtTron?.queryId ?? null,
+        ethereum: ethBlacklist ? 'on-chain' : null,
+        tron: tronBlacklist ? 'trongrid' : null,
         solana: duneSolanaFreezes?.queryId ?? null,
       },
-      executedAt: duneBlacklistCounts?.executedAt ?? null,
+      executedAt: duneSolanaFreezes?.executedAt ?? null,
       usdc: sumMonthly(
-        countColumn(duneBlacklistCounts, 'usdc_blacklisted'),
+        countColumn(ethBlacklist?.counts, 'usdc_blacklisted'),
         countColumn(duneSolanaFreezes, 'usdc_frozen')
       ),
       usdt: sumMonthly(
-        countColumn(duneBlacklistCounts, 'usdt_blacklisted'),
-        countColumn(duneUsdtTron, 'usdt_blacklisted'),
+        countColumn(ethBlacklist?.counts, 'usdt_blacklisted'),
+        countColumn(tronBlacklist, 'usdt_blacklisted'),
         countColumn(duneSolanaFreezes, 'usdt_frozen')
       ),
     };
   } else if (prevBlacklist.counts) {
     blacklist.counts = prevBlacklist.counts;
   }
-  if (ethFrozenValue) {
-    blacklist.value = ethFrozenValue;
+  if (ethBlacklist) {
+    blacklist.value = ethBlacklist.value;
   } else if (prevBlacklist.value) {
     blacklist.value = prevBlacklist.value;
   }

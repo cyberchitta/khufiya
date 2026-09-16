@@ -8,7 +8,7 @@ import { promises as fs } from 'fs';
 export const hex = (n) => '0x' + n.toString(16);
 
 export function makeRpc(url) {
-  return async function rpc(method, params) {
+  const rpc = async function rpc(method, params) {
     for (let attempt = 0; ; attempt++) {
       try {
         const res = await fetch(url, {
@@ -34,6 +34,30 @@ export function makeRpc(url) {
       }
     }
   };
+  rpc.url = url;
+  return rpc;
+}
+
+// Block timestamps for `blocks`, as a Map block -> unix seconds. Backfilling a
+// long event history needs thousands of these, and no keyless endpoint tried
+// would take them as JSON-RPC batches (Tenderly 429s, Cloudflare and Ankr do
+// not support batching, llamarpc and drpc 5xx), so they go one at a time,
+// `concurrency` in flight. A block that comes back without a timestamp fails
+// the call: a missing one would silently misdate an event rather than show up.
+export async function blockTimes(rpc, blocks, { concurrency = 5 } = {}) {
+  const unique = [...new Set(blocks)];
+  const times = new Map();
+  let next = 0;
+  const worker = async () => {
+    while (next < unique.length) {
+      const block = unique[next++];
+      const { timestamp } = (await rpc('eth_getBlockByNumber', [hex(block), false])) ?? {};
+      if (!timestamp) throw new Error(`no timestamp for block ${block}`);
+      times.set(block, parseInt(timestamp, 16));
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(concurrency, unique.length) }, worker));
+  return times;
 }
 
 async function getLogs(rpc, filter, fromBlock, toBlock) {

@@ -1,7 +1,11 @@
-import { hex, makeRpc, scanLogs, readCache as readEventCache, writeCache } from './evm-logs.js';
+import { blockTimes, hex, makeRpc, scanLogs, readCache as readEventCache, writeCache } from './evm-logs.js';
 
-// Ethereum frozen stablecoin value, read from the chain — replaces Dune query
-// 7714984. An address counts while it is still blacklisted (add/remove events
+// The Ethereum stablecoin blacklist, read from the chain — replaces Dune
+// queries 7714982 (monthly new blacklisted addresses) and 7714984 (frozen
+// value). One scan of the add/remove events feeds both, so the two can never
+// disagree about what was blacklisted when.
+//
+// An address counts toward the value while it is still blacklisted (add/remove
 // replayed in order); its value is balanceOf at a block ~64 behind head.
 //
 // balanceOf, not a transfer-derived balance: Tether's destroyBlackFunds burns a
@@ -43,7 +47,8 @@ const TOKENS = {
 
 const word = (n) => BigInt(n).toString(16).padStart(64, '0');
 
-// Log → [block, logIndex, token, address, 1 = added | 0 = removed]
+// Log → [block, logIndex, token, address, 1 = added | 0 = removed]. The block's
+// timestamp is appended separately, in one batch per scan (see withTimes).
 function toEvent(log) {
   const [name, token] = Object.entries(TOKENS).find(([, t]) => t.contract === log.address.toLowerCase());
   const raw = token.addressIn === 'topic1' ? log.topics[1] : log.data.slice(0, 66);
@@ -53,6 +58,17 @@ function toEvent(log) {
 export const readCache = (file) => readEventCache(file, SCAN_FROM);
 export { writeCache };
 
+// Fill index 5 (unix seconds) on every event that lacks one: the new events of
+// this scan, and — the first time a cache written before the counts existed is
+// read — the whole history. Months are cut on the timestamp, so an event with
+// no timestamp would land in the wrong month rather than fail visibly.
+async function withTimes(events) {
+  const missing = events.filter((e) => e[5] === undefined).map((e) => e[0]);
+  if (!missing.length) return events;
+  const times = await blockTimes(rpc, missing);
+  return events.map((e) => (e[5] === undefined ? [...e, times.get(e[0])] : e));
+}
+
 // Extend the cached event history through `toBlock`. Pure: returns a new cache.
 export async function scanEvents(cache, toBlock) {
   const filter = {
@@ -61,7 +77,7 @@ export async function scanEvents(cache, toBlock) {
   };
   const logs = await scanLogs(rpc, filter, cache.scannedThrough + 1, toBlock, { span: LOG_SPAN });
   const events = [...cache.events, ...logs.map(toEvent)].sort((a, b) => a[0] - b[0] || a[1] - b[1]);
-  return { scannedThrough: Math.max(cache.scannedThrough, toBlock), events };
+  return { scannedThrough: Math.max(cache.scannedThrough, toBlock), events: await withTimes(events) };
 }
 
 // Multicall3.aggregate((address,bytes)[]) of balanceOf → one eth_call per chunk.
@@ -103,16 +119,39 @@ export async function frozenAt(cache, block, { includeRemoved = false } = {}) {
   return out;
 }
 
-// Scan to a settled block, write the cache, and return the snapshot there.
-export async function fetchEthFrozenValue(cacheFile) {
+// Cached events → Dune's row shape, which countColumn() in the fetch keys on.
+// Counts ADD events, not distinct addresses: a re-blacklisted address counts
+// again, and removals are not netted. That is what 7714982 did, and what the
+// page's cumulative "ever blacklisted" figure means.
+export function toRows(events) {
+  const byMonth = new Map();
+  for (const [, , token, , added, time] of events) {
+    if (added !== 1) continue;
+    const month = new Date(time * 1000).toISOString().slice(0, 7);
+    const row = byMonth.get(month) ?? { usdc: 0, usdt: 0 };
+    row[token] += 1;
+    byMonth.set(month, row);
+  }
+  return [...byMonth.entries()]
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .map(([month, r]) => ({
+      block_month: `${month}-01 00:00:00.000 UTC`,
+      usdc_blacklisted: r.usdc,
+      usdt_blacklisted: r.usdt,
+    }));
+}
+
+// Scan to a settled block, write the cache, and return both series read from
+// it: monthly blacklist adds, and the frozen value of what is still blacklisted.
+export async function fetchEthBlacklist(cacheFile) {
   const head = parseInt(await rpc('eth_blockNumber', []), 16);
   const block = head - CONFIRMATIONS;
   const cache = await scanEvents(await readCache(cacheFile), block);
   await writeCache(cacheFile, cache);
   const { timestamp } = await rpc('eth_getBlockByNumber', [hex(block), false]);
+  const blockTime = new Date(parseInt(timestamp, 16) * 1000).toISOString();
   return {
-    block,
-    blockTime: new Date(parseInt(timestamp, 16) * 1000).toISOString(),
-    ...(await frozenAt(cache, block)),
+    counts: { rows: toRows(cache.events) },
+    value: { block, blockTime, ...(await frozenAt(cache, block)) },
   };
 }
