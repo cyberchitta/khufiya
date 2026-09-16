@@ -1,6 +1,6 @@
 ---
 name: private-canary-refresh
-description: Refresh runbook for ALL of the private-canary page's data (x402scan, Blockchair, ZecHub, bitinfocharts, CoinGecko, Coin Metrics, DefiLlama, and the keyless on-chain readers). Use when refreshing the page's data, adding or debugging a source, or working on fetch-pc-stats. Dune is retired: queries/*.sql are history only, and baselines/ holds the Dune results the on-chain readers were checked against.
+description: Refresh runbook for ALL of the private-canary page's data (x402scan, Blockchair, ZecHub, bitinfocharts, CoinGecko, Coin Metrics, DefiLlama, and the keyless on-chain readers). Use when refreshing the page's data, adding or debugging a source, or working on fetch-pc-stats. Also carries the qualitative re-survey a numbers-only refresh skips: the page's hand-curated agent-tooling set, agent-wallet-freeze claim, and event-timeline rows. Dune is retired: queries/*.sql are history only, and baselines/ holds the Dune results the on-chain readers were checked against.
 user-invocable: true
 ---
 
@@ -169,6 +169,50 @@ public data URL**. So both are appended by hand.
    prefix. Fix the source, don't rerun; or restore from git (`HEAD:raw/<old>/`).
 4. Verify the cross-checks below, then `bun run build` in the site repo + commit
    in both repos (human-gated).
+5. **Re-survey the qualitative claims** — see below. The page carries three
+   claims no script touches; a numbers-only refresh silently ages them.
+
+## The qualitative re-survey (step 5)
+
+Every series above is fetched. Three of the page's claims are *hand-curated
+prose* in `src/articles/private-canary.md`, and nothing in this pipeline will
+ever flag them as stale:
+
+- **`### Agent-Specific Tooling`** — the named set of AI-specific privacy
+  tooling. The page calls this the prediction's *strongest confirmation
+  signal*, so it is the most expensive one to leave old.
+- **`### The Agent-Wallet Freeze`** — whether any freeze has yet linked to an
+  autonomous agent's wallet, and what the closest near-miss is.
+- **`## Event Timeline`** — the `tooling`, `rails`, `listing` and `regulatory`
+  rows. `market` and `security` rows tend to surface on their own; these do not.
+
+**Standing searches** (both coins, every refresh — the Monero side is the one
+that gets skipped):
+
+- Zcash Community Grants: new and updated applications mentioning agents or
+  x402 — `github.com/ZcashCommunityGrants/zcashcommunitygrants/issues` and the
+  community forum. Status changes count too: February 2026's declined bridge
+  and September 2026's open Rill application are both timeline rows.
+- GitHub for agent-facing privacy payment tooling on **both** chains — x402 or
+  HTTP-402 against Monero/Zcash, MCP servers, agent wallets and gateways.
+- Whether anything already on the page has *shipped* since last time: CipherPay
+  moved from a name in a grant thread to a product selling "x402 paywalls and
+  MCP for AI agents" without the page noticing.
+
+**Record dates and activity, not just names.** Use the GitHub API
+(`api.github.com/repos/<owner>/<repo>` → `created_at`, `pushed_at`,
+`stargazers_count`), and mark a dormant project dormant — house practice treats
+activity as revealed preference, and a dead repo padding the set overstates the
+signal. Small is fine; the set is small by nature.
+
+**A miss is a correction, not an update.** 2026-09-16: the September refresh
+moved every number but left the tooling paragraph at its June reading, which
+had claimed nothing comparable existed on the Monero side — while XMR402 (2026-03-02)
+and ripley-xmr-gateway (2026-02-26) both predated that survey. When a re-survey
+turns up something that was already there, the page says so rather than quietly
+widening the set; the `Earlier Readings` section keeps superseded readings
+**verbatim**, so the correction belongs in the current reading, never by editing
+the old one.
 
 ## Validation cross-checks (after a refresh, before committing)
 
