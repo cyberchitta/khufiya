@@ -5,6 +5,9 @@ import matter from 'gray-matter';
 import { fetchEthBlacklist } from './eth-stablecoin-blacklist.js';
 import { fetchTronUsdtBlacklist } from './tron-usdt-blacklist.js';
 import { fetchBaseFreezes } from './base-usdc-freezes.js';
+import { fetchTornadoFlows } from './tornado-flows.js';
+import { fetchPrivacyPoolsFlows } from './privacy-pools-flows.js';
+import { fetchRailgunFlows } from './railgun-flows.js';
 
 // Fetches the tracked statistics for the privacy-coins-ai-money prediction
 // tracker page. All sources are free/keyless. Each fetcher is fail-soft: a
@@ -72,6 +75,9 @@ const DATA_DIR = path.join(__dirname, '..', 'data');
 const ETH_BLACKLIST_CACHE = path.join(__dirname, '..', 'cache', 'eth-stablecoin-blacklist.json');
 const BASE_FREEZE_CACHE = path.join(__dirname, '..', 'cache', 'base-usdc-blacklist.json');
 const TRON_BLACKLIST_CACHE = path.join(__dirname, '..', 'cache', 'tron-usdt-blacklist.json');
+const TORNADO_FLOWS_CACHE = path.join(__dirname, '..', 'cache', 'tornado-flows.json');
+const PRIVACY_POOLS_FLOWS_CACHE = path.join(__dirname, '..', 'cache', 'privacy-pools-flows.json');
+const RAILGUN_FLOWS_CACHE = path.join(__dirname, '..', 'cache', 'railgun-flows.json');
 const PRIVACY_DIR = path.join(SITE_DIR, 'src', 'assets', 'data', 'privacy-coins');
 const RAW_DIR = path.join(PRIVACY_DIR, 'raw');
 const POINTER_FILE = path.join(SITE_DIR, 'src', '_data', 'pcStats.json');
@@ -94,7 +100,7 @@ async function fetchJson(url, headers = {}) {
 }
 
 // Every [FAIL] lands here, so the closing summary can't miss one. A skipped
-// source (skip()) also returns null but is not a failure, which is why the
+// source also returns null but is not a failure, which is why the
 // summary can't just count null results.
 const failedSources = [];
 
@@ -329,114 +335,13 @@ async function fetchMarketSeries() {
   return series;
 }
 
-// --- Dune Analytics (optional, keyed) ---
-// Reads the LATEST cached results of queries we OWN on Dune. Auth via
-// DUNE_API_KEY in .env. The free plan cannot execute queries over the API
-// (manual editor runs only), so the refresh runbook is: open each query in
-// the Dune editor and click Run, THEN run this script — which reads the
-// freshly-cached results here. See _notes/DUNE-SETUP.md. Since 2026-09-10 the
-// free plan is view-only, so this path is dead once the Plus trial lapses; the
-// on-chain readers replacing it are checked against baselines/dune-2026-09-15/.
-//
-// Every Dune series is optional + fail-soft: no key (the keyless-contributor
-// default) or an unconfigured query id => the series is skipped and the
-// previous folder's copy is carried forward, so keyless stays the default and
-// keyed gets the richer data. Query ids are public (not secrets) and shared
-// across contributors, so they live in version control here, not in .env.
-
-const DUNE_API_KEY = process.env.DUNE_API_KEY || null;
-
-// The free plan can't execute via API, so the runbook is: Run each query in the
-// Dune editor, THEN run this script (which reads the freshly-cached results).
-// Warn if a query's cached execution is older than this — a sign it wasn't
-// re-Run before the refresh, so the data would be stale.
-const DUNE_STALE_AFTER_DAYS = 45;
-
-// Query ids are public (not secrets) → version-controlled here. All ours now;
-// see .claude/skills/private-canary-refresh/queries/ and _notes/DUNE-SETUP.md.
-const DUNE_QUERIES = {
-  // Privacy-layer flows — per-month stablecoin turnover. Railgun returns only a
-  // recent SUFFIX (heavy → prefix cached in repo, seeded once from @amlbot's
-  // 6702283 de-cumulated); Tornado + PP return FULL history (cheap). mergeMonthly
-  // handles both: full replaces all, suffix replaces just its recent overlap.
-  railgunTurnover: 7714782, // SUFFIX (dune-railgun-turnover-recent.sql, {{since}})
-  tornadoTurnover: 7714895, // FULL (dune-tornado-turnover.sql)
-  privacyPools: 7714910, // FULL (dune-privacy-pools-turnover.sql)
-  // Taint backdrop (§7). Counts = monthly new blacklisted/frozen addresses,
-  // summed across chains (blacklisting is per-contract-per-chain). Eth carries
-  // both stablecoins, Tron carries USDT (~71% of all-time USDT freezes), and
-  // both are read at source now — so no Dune query feeds the blacklist at all.
-};
-
-// Reads cached results only (no execute) — execution is unavailable on the
-// free API tier. Follows next_uri pagination so multi-page series come back
-// whole. Throws on a missing key/id or an unfinished execution; safe() and
-// carryForward() handle the fallout.
-async function fetchDuneResults(queryId) {
-  if (!DUNE_API_KEY) throw new Error('no DUNE_API_KEY (keyless run)');
-  if (!queryId) throw new Error('query id not configured');
-  let url = `https://api.dune.com/api/v1/query/${queryId}/results?limit=10000`;
-  const rows = [];
-  let columns = [];
-  let executedAt = null;
-  let finished = false;
-  let failure = null;
-  for (let page = 0; url && page < 20; page++) {
-    const res = await fetch(url, {
-      headers: { 'X-Dune-API-Key': DUNE_API_KEY },
-      signal: AbortSignal.timeout(30000),
-    });
-    if (!res.ok) {
-      const detail = (await res.text().catch(() => '')).slice(0, 120);
-      throw new Error(`query ${queryId} returned ${res.status} ${detail}`);
-    }
-    const body = await res.json();
-    finished = body.is_execution_finished ?? finished;
-    // A failed run is "finished" too, with no rows — without this it reads as
-    // an empty success and overwrites the carried-forward series.
-    if (body.state && body.state !== 'QUERY_STATE_COMPLETED') failure = `${body.state}: ${body.error?.type ?? ''}`;
-    columns = body.result?.metadata?.column_names ?? columns;
-    executedAt = body.execution_ended_at ?? executedAt;
-    rows.push(...(body.result?.rows ?? []));
-    url = body.next_uri ?? null;
-  }
-  if (!finished) throw new Error(`query ${queryId} has no finished execution — Run it in the Dune editor first`);
-  if (failure) throw new Error(`query ${queryId} latest execution ${failure}`);
-  return { queryId, executedAt, columns, rows };
-}
-
-function skip(label) {
-  console.log(`[skip] ${label} — no key or query id; carrying forward`);
-  return null;
-}
-
-// Normalize a Dune month value ("2026-03-01 00:00:00.000 UTC" or "2026-03-01")
-// to a 'YYYY-MM-01' key.
+// Normalize a month value ("2026-03-01 00:00:00.000 UTC" or "2026-03-01") to a
+// 'YYYY-MM-01' key.
 function monthKey(value) {
   return `${String(value).slice(0, 7)}-01`;
 }
 
-// A turnover query's rows → ascending [[month, usd], ...]. Queries expose
-// block_month + trn_usd (per-month gross turnover; stablecoins ≈ $1 face value).
-function rowsToMonthly(result) {
-  return (result?.rows ?? [])
-    .map((r) => [monthKey(r.block_month), Math.round(Number(r.trn_usd) * 100) / 100])
-    .filter(([m, v]) => m && Number.isFinite(v))
-    .sort((a, b) => a[0].localeCompare(b[0]));
-}
-
-// Splice `incoming` onto kept history: keep existing months strictly before the
-// earliest incoming month, then take all incoming. A FULL series (incoming
-// starts at history's beginning) replaces everything; a SUFFIX replaces only its
-// recent overlap and appends new months. Same code path for both.
-function mergeMonthly(existing, incoming) {
-  if (!incoming?.length) return existing ?? [];
-  const cut = incoming[0][0];
-  const kept = (existing ?? []).filter(([m]) => m < cut);
-  return [...kept, ...incoming].sort((a, b) => a[0].localeCompare(b[0]));
-}
-
-// A count column off a Dune result → ascending [[month, n], ...].
+// A count column off an on-chain reader → ascending [[month, n], ...].
 function countColumn(result, key) {
   return (result?.rows ?? [])
     .map((r) => [monthKey(r.block_month), Number(r[key]) || 0])
@@ -453,18 +358,6 @@ function sumMonthly(...seriesList) {
     for (const [m, n] of series ?? []) byMonth.set(m, (byMonth.get(m) || 0) + n);
   }
   return [...byMonth.entries()].sort((a, b) => a[0].localeCompare(b[0]));
-}
-
-// Loud warning if a query's cached execution predates the refresh by too much —
-// it usually means the query wasn't re-Run in the Dune editor first.
-function warnIfStale(label, executedAt) {
-  if (!executedAt) return;
-  const ageDays = (Date.now() - new Date(executedAt).getTime()) / 86400000;
-  if (ageDays > DUNE_STALE_AFTER_DAYS) {
-    console.warn(
-      `[STALE] dune ${label}: cached execution is ${Math.round(ageDays)}d old (${executedAt}) — re-Run it in Dune`
-    );
-  }
 }
 
 // --- output assembly ---
@@ -553,9 +446,9 @@ async function main() {
     marketSeries,
     stablecoinSeries,
     onchainPrivacyTvl,
-    duneRailgun,
-    duneTornado,
-    dunePrivacyPools,
+    railgunFlows,
+    tornadoFlows,
+    privacyPoolsFlows,
     baseFreezes,
     ethBlacklist,
     tronBlacklist,
@@ -571,15 +464,9 @@ async function main() {
     safe('bitinfocharts market history', fetchMarketSeries),
     safe('coinmetrics stablecoin tx', fetchStablecoinSeries),
     safe('defillama privacy protocols', fetchOnchainPrivacyTvl),
-    DUNE_API_KEY && DUNE_QUERIES.railgunTurnover
-      ? safe('dune railgun turnover (recent suffix)', () => fetchDuneResults(DUNE_QUERIES.railgunTurnover))
-      : skip('dune railgun turnover'),
-    DUNE_API_KEY && DUNE_QUERIES.tornadoTurnover
-      ? safe('dune tornado turnover (full)', () => fetchDuneResults(DUNE_QUERIES.tornadoTurnover))
-      : skip('dune tornado turnover'),
-    DUNE_API_KEY && DUNE_QUERIES.privacyPools
-      ? safe('dune privacy pools turnover', () => fetchDuneResults(DUNE_QUERIES.privacyPools))
-      : skip('dune privacy pools turnover'),
+    safe('railgun turnover (on-chain, eth+polygon+arbitrum)', () => fetchRailgunFlows(RAILGUN_FLOWS_CACHE)),
+    safe('tornado turnover (on-chain)', () => fetchTornadoFlows(TORNADO_FLOWS_CACHE)),
+    safe('privacy pools turnover (on-chain)', () => fetchPrivacyPoolsFlows(PRIVACY_POOLS_FLOWS_CACHE)),
     safe('base usdc freezes (on-chain)', () => fetchBaseFreezes(BASE_FREEZE_CACHE)),
     safe('ethereum blacklist counts + frozen value (on-chain)', () => fetchEthBlacklist(ETH_BLACKLIST_CACHE)),
     safe('tron usdt blacklist (trongrid)', () => fetchTronUsdtBlacklist(TRON_BLACKLIST_CACHE)),
@@ -649,31 +536,27 @@ async function main() {
   // Dune series: persist each query result verbatim (columns + rows). Build-time
   // shaping into chart series happens in pcData.js against these real columns.
 
-  // Privacy-layer flows — per-month gross stablecoin turnover by protocol. Each
-  // protocol's series is merged onto the carried-forward history: Railgun's query
-  // returns only a recent suffix (the prefix stays cached in the repo, seeded once
-  // from @amlbot — see seed-privacy-flows.mjs); Tornado + PP return full history.
-  // mergeMonthly() handles both. pcData.js cumulates these for the chart.
+  // Privacy-layer flows — per-month gross stablecoin turnover by protocol, now
+  // read on-chain (no Dune). Each reader returns FULL history off its own event
+  // cache, so there is no prefix to splice and no mergeMonthly(): a protocol
+  // that fetched replaces its series outright, and one that failed keeps the
+  // carried-forward copy. File name kept from the Dune era — it is the site's
+  // input contract. pcData.js cumulates these for the chart.
   const prevFlows = await readExisting(prevFolder, 'dune-privacy-flows.json', { protocols: {} });
-  const flowResults = { railgun: duneRailgun, tornado: duneTornado, privacyPools: dunePrivacyPools };
+  const flowResults = { railgun: railgunFlows, tornado: tornadoFlows, privacyPools: privacyPoolsFlows };
   const protocols = {};
   for (const [name, result] of Object.entries(flowResults)) {
     const prev = prevFlows.protocols?.[name] ?? null;
     if (result) {
-      warnIfStale(name, result.executedAt);
-      protocols[name] = {
-        queryId: result.queryId,
-        executedAt: result.executedAt,
-        monthly: mergeMonthly(prev?.monthly, rowsToMonthly(result)),
-      };
+      protocols[name] = { source: 'on-chain', readThrough: result.chains ?? result.scannedThrough, monthly: result.monthly };
     } else if (prev) {
-      protocols[name] = prev; // no fetch this run — keep the cached history
+      protocols[name] = prev; // failed this run — keep the cached history
     }
   }
   if (Object.keys(protocols).length) {
     await writeData(folder, 'dune-privacy-flows.json', {
       source:
-        'Dune Analytics — per-month gross stablecoin turnover by privacy protocol (our queries 7714782/7714895/7714910; Railgun prefix seeded from @amlbot 6702283).',
+        'On-chain — per-month gross stablecoin turnover by privacy protocol. Railgun: Ethereum+Polygon+Arbitrum transfers (BNB out of scope, no keyless archive route). Tornado: Deposit/Withdrawal events x instance denomination. Privacy Pools: stablecoin transfers, matched by contract address not symbol.',
       fetchedAt: now,
       protocols,
     });

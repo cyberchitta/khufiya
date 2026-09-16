@@ -1,15 +1,15 @@
 ---
 name: private-canary-refresh
-description: Refresh runbook + version-controlled query catalog for ALL of the private-canary page's data (x402scan, Blockchair, ZecHub, bitinfocharts, CoinGecko, Coin Metrics, DefiLlama, and the Dune layer). Use when refreshing the page's data, adding/editing a source or Dune query, or debugging fetch-pc-stats. Holds the canonical Dune .sql in queries/; the Dune results they must be replaced by are in baselines/.
+description: Refresh runbook for ALL of the private-canary page's data (x402scan, Blockchair, ZecHub, bitinfocharts, CoinGecko, Coin Metrics, DefiLlama, and the keyless on-chain readers). Use when refreshing the page's data, adding or debugging a source, or working on fetch-pc-stats. Dune is retired: queries/*.sql are history only, and baselines/ holds the Dune results the on-chain readers were checked against.
 user-invocable: true
 ---
 
 # private-canary-refresh
 
 Everything behind the `private-canary` page's data. One command fetches every
-source; this skill is its runbook + the version-controlled home for the Dune
-query definitions (the live queries are owned by the Showrunner's Dune account;
-`queries/` here is the only tracked copy).
+source, all of it keyless. This skill is its runbook; `queries/` holds the
+retired Dune `.sql` as history, and `baselines/` the Dune results the on-chain
+readers that replaced them were checked against.
 
 **Two repos.** The script runs here (khufiya) and writes into the site repo
 (`SITE_DIR`, default `../www.cyberchitta.cc`); the site owns `pcData.js`,
@@ -34,9 +34,8 @@ bun run fetch-pc-stats        # scripts/fetch-privacy-coin-stats.js, run in khuf
   upstream revisions.
 - **`snapshots.json` is append-only**, one entry per UTC day — a refresh adds
   today's entry on top of the history, never rewrites past days.
-- **Keyless is the default.** No `DUNE_API_KEY` → every Dune series `[skip]`s and
-  carries forward; all the other sources are keyless and still run. Keyed builds
-  get the richer Dune layer.
+- **Keyless throughout.** Every source is keyless as of 2026-09-16 — there is no
+  API key anywhere in the refresh, and no `.env` is needed.
 
 ## Sources
 
@@ -49,7 +48,7 @@ bun run fetch-pc-stats        # scripts/fetch-privacy-coin-stats.js, run in khuf
 | **CoinGecko** keyless | current prices, mcaps, privacy-coins category, global (snapshot) | ~30/min, rate-limits on rapid reruns. **History capped at 365d** — why market history rides bitinfocharts |
 | **Coin Metrics** community API | `stablecoin-series.json` (USDT/USDC tx/day) | keyless; `usdt`/`usdc` are cross-chain aggregates; paginated `paging_from=start`, page cap as runaway guard |
 | **DefiLlama** `/protocol/<slug>` | `onchain-privacy-series.json` (TVL railgun/tornado-cash/privacy-pools) | keyless, full daily history |
-| **Dune Analytics** (3 queries, privacy-layer flows only) | `dune-privacy-flows.json` | the complex one — see **Dune sub-layer** below |
+| **on-chain flow readers** (keyless) | `dune-privacy-flows.json` | Railgun (`railgun-flows.js`, Eth+Polygon+Arbitrum), Tornado (`tornado-flows.js`), Privacy Pools (`privacy-pools-flows.js`). File name kept from the Dune era — it is the site's input contract. See **Privacy-layer flows** below |
 | **on-chain readers** (keyless) | `dune-base-freeze.json`, `dune-blacklist.json` | Base + Ethereum via `evm-logs.js`, Tron via TronGrid; file names kept from the Dune era because they are the site's input contract |
 | **fiat rails** (hand-maintained seed) | `fiat-rails-series.json` (UPI monthly volume + Visa quarterly processed tx → the chart's "fiat ceiling") | **not fetched** — see **Fiat-rails baseline** below |
 
@@ -62,97 +61,64 @@ script.** Source-verify new entries before publish (Showrunner-gated).
 it into each dated folder so it caches/resolves like the fetched series. See
 **Fiat-rails baseline** below.
 
-## Dune sub-layer
+## Privacy-layer flows
 
-### The one hard constraint
+**No Dune query feeds anything any more.** The last three (7714782 Railgun,
+7714895 Tornado, 7714910 Privacy Pools) were replaced by on-chain readers on
+2026-09-16; `queries/*.sql` and `_notes/DUNE-SETUP.md` are kept only as history,
+and `baselines/dune-2026-09-15/` is what the readers were checked against.
 
-**As of 2026-09-10 the free plan is view-only** — no runs at all, and API reads
-spend credits. The 2026-09-15 refresh ran on the Plus trial (still a 2-minute
-cap); after it there is no Dune path, and these series move to the `khufiya`
-repo, read directly from the chains. Until then, the mechanics were:
+All three write `dune-privacy-flows.json` as **full history off their own event
+cache in `cache/`** — no prefix to splice, no `{{since}}` to tune, nothing to
+re-Run by hand before a refresh. Commit the caches with the refresh.
 
-> **Showrunner clicks Run on each query in the Dune editor → `fetch-pc-stats`
-> reads the freshly-cached results.**
+| protocol | reader | cache | scope |
+|---|---|---|---|
+| Railgun | `scripts/railgun-flows.js` | `cache/railgun-flows.json` | Ethereum + Polygon + Arbitrum |
+| Tornado | `scripts/tornado-flows.js` | `cache/tornado-flows.json` | Ethereum |
+| Privacy Pools | `scripts/privacy-pools-flows.js` | `cache/privacy-pools-flows.json` | Ethereum |
 
-The client reads only: `GET /v1/query/{id}/results`, header `X-Dune-API-Key`,
-`next_uri` pagination, throws on a missing key/id or an unfinished execution. It
-never executes. `DUNE_STALE_AFTER_DAYS = 45` → a stale cached run logs `[STALE]`
-(re-Run it). Query ids are public → live in `DUNE_QUERIES` in the fetch script,
-not `.env`. Only the key is in `.env` (khufiya's own, gitignored). Editor save names: `cyberchitta — <what>`.
+**Stablecoins are matched by contract address, never by symbol** — this is the
+single most important thing here. Dune joined `tokens.erc20` on
+`upper(symbol) in ('USDC','USDT','DAI')`, which counts any token that merely
+*calls itself* USDC or DAI. That was not cosmetic:
 
-### Query catalog
+- **Railgun 2026-08**: a counterfeit "DAI" (`0x12d9fe4c…`) moved 110,980,202
+  units in 6 transfers. Dune reported **$177,925,658**; the canonical
+  stablecoins give **$67,360,458** — the published figure was ~2.6x too high.
+- **Privacy Pools**: `0x32857f58…` ($50.00, 2026-01) and `0x18042f88…`
+  ($1,318.68, 2026-03) were the entire difference from 7714910.
 
-All DuneSQL (Trino) — set the editor engine to DuneSQL, not legacy Spark/v1.
+The symbol join also **excluded** real flow, because a token can be renamed out
+of the filter: Polygon USDT now reports `USDT0`, and bridged `USDC.e` on Polygon
+and Arbitrum upper-cases to `USDC.E`. All three are counted by address here.
 
-| key | id | Dune name | queries/ file | feeds |
-|---|---|---|---|---|
-| `railgunTurnover` | 7714782 | railgun turnover (recent) | `railgun-turnover-recent.sql` | flows railgun (suffix, `{{since}}`) |
-| `tornadoTurnover` | 7714895 | tornado turnover | `tornado-turnover.sql` | flows tornado (full) |
-| `privacyPools` | 7714910 | privacy pools turnover | `privacy-pools-turnover.sql` | flows privacyPools (full) |
+**Per-reader notes**
 
-**Per-query notes**
-
-- **Railgun is prefix + suffix.** The repo holds the per-month history; each
-  refresh recomputes only recent months. Set `{{since}}` ~3 months back before
-  Running 7714782 (a 3-month, 4-chain window runs ~1:20). The prefix was seeded
-  **once** from AMLBot 6702283 de-cumulated (`seed-privacy-flows.mjs`); don't
-  re-seed unless re-bootstrapping. Merge = replace overlap + append.
-- **Tornado / Privacy Pools** — cheap full per-month queries, just Run.
-  Tornado: curated `tornado_cash.*` `amount` is already human-units (do **not**
-  `/power(10,decimals)`); filter the three stablecoin addresses directly.
-- **Privacy Pools contracts unverified** (entrypoint `0x6818…6b46`, pool
-  `0xf241…c9fb`) — coherent growth curve so likely right, but **confirm on
-  Etherscan before publish**. Magnitude ~$27M lifetime.
-- **Base freeze is on-chain, not Dune** (`scripts/base-usdc-freezes.js`,
-  keyless): event rows rolled up in `pcData.js`; 0 new rows is a *real* reading
-  (the canary), not an error. History cached in `cache/base-usdc-blacklist.json`
-  (commit it with the refresh). Base RPCs cap log ranges at 1–2k blocks, so a
-  lost cache means a ~40-min rescan.
-- **Multi-chain blacklist, now Eth + Tron only.** Blacklisting is per-contract-
-  per-chain; Tron carries ~71% of all-time USDT freezes. `counts.usdt =
-  Eth + Tron`, `counts.usdc = Eth` alone (Circle dropped Tron in 2024);
-  `counts.chains` records each chain's read head. **Both are required** — with
-  only two sources, one missing chain would publish a total short by most of it,
-  so a failure carries the previous total forward rather than writing a partial.
-  No Dune query feeds the blacklist any more. **Frozen value is Ethereum-only**
-  — so a quoted value is Eth-scope while the USDT count is two-chain; phrase
-  honestly.
-- **Solana is out of scope (owner decision, 2026-09-16)** — the counts are
-  Eth + Tron and the page should say so. It was ~21 USDC / ~25 USDT all-time
-  (~2% of the total), so dropping it moves the published count down slightly.
-  Why it cannot be rebuilt keylessly, measured 2026-09-16: Solana has no log
-  index, so there is no `eth_getLogs` equivalent — freezes are SPL
-  `FreezeAccount` instructions and must be found by walking an account's
-  transactions. Circle's freeze authority `7dGbd2QZ…` works (27 signatures, 17
-  freezes + 4 thaws, parsed cleanly) but the public RPC serves **nothing before
-  2024-08-20**, and 7 of the 21 USDC freezes predate that. Tether's freeze
-  authority `Q6Xprfk…` is not a dedicated key: its most recent 1,000 signatures
-  span **seven weeks** (2026-07-12 → 2026-08-31) with zero freezes in the first
-  340 parsed, so reaching 2020 means paging hundreds of thousands of
-  transactions at the ~1.4 tx/s the public RPC tolerates. Every keyless
-  alternative (Helius, Solscan, SolanaFM, Flipside) needs an API key, which the
-  no-paid-source constraint forbids. `stablecoin-solana-freezes.sql` and 7715332
-  are kept only as history — and 7715332 never returned a result anyway
-  (2-minute timeout, the `FAILED` file in `baselines/`).
-- **Ethereum blacklist is on-chain, not Dune**
-  (`scripts/eth-stablecoin-blacklist.js`, keyless): one scan of the add/remove
-  events feeds both the monthly counts (replacing 7714982) and `balanceOf` of
-  still-blacklisted addresses (replacing 7714984), so the two cannot disagree.
-  Event history cached in `cache/eth-stablecoin-blacklist.json` (commit it with
-  the refresh). Counts are ADD events, not distinct addresses — a re-blacklisted
-  address counts again and removals are not netted, which is what 7714982 did
-  and what the page's cumulative "ever blacklisted" figure means. 7714984's
-  balance table kept USDT burned by `destroyBlackFunds` — June's $1.60B was
-  ~$718M high; `blacklist-value-eth.sql` and `blacklist-counts-eth.sql` are kept
-  only as history. `taint-watch` keeps Base USDC freezes as a separate line (not
-  in the USDC aggregate → no double-count).
-- **Tron USDT blacklist is TronGrid, not Dune**
-  (`scripts/tron-usdt-blacklist.js`, keyless): Tron is not EVM-RPC, so
-  `evm-logs.js` does not apply — TronGrid's event API pages through a
-  `fingerprint` cursor and returns block timestamps inline. Replaced 7715354
-  (`usdt-tron-blacklist.sql` kept only as history). History cached in
-  `cache/tron-usdt-blacklist.json` (commit it with the refresh); a lost cache
-  costs a ~4-min reseed, not an hour.
+- **Tornado counts its own Deposit/Withdrawal events x the instance's fixed
+  denomination**, not ERC20 transfers — exact integer arithmetic, and the same
+  definition Dune's curated `tornado_cash.*` tables use. Transfer-scanning was
+  measured wrong twice over: stray tokens sent straight to an instance count as
+  flow, and float accumulation puts cents on whole-number months. The 10
+  stablecoin instances were derived on-chain (every contract that ever emitted a
+  Tornado `Deposit`, then `token()`/`denomination()`); ~200 copycat contracts
+  share that topic0, so **do not widen the set without re-checking the
+  baseline**. Verified 2026-09-16: **81/81 months exact**.
+- **Railgun drops BNB (owner decision, 2026-09-16).** Not a range problem — a
+  keyless **archive** problem. Of 23 BSC endpoints measured, the ones that hold
+  up under load serve only recent blocks (`header not found` deep in history),
+  the one archival endpoint times out (8/60 ok, ~195h for a pass), and
+  publicnode 403s under sustained load and refuses `eth_getLogs` without an
+  `address` filter. BNB is <=~2% (its contract holds ~$330k). **A quoted Railgun
+  figure is three-chain scope — phrase it honestly.** All three chains must
+  succeed or the run fails; a short total would read as a collapse in turnover.
+- **Privacy Pools contracts are still unconfirmed on Etherscan** (entrypoint
+  `0x6818…6b46`, pool `0xf241…c9fb`) — same caveat as the Dune era. Reproducing
+  7714910 is evidence, not confirmation.
+- **Railgun's old repo-cached prefix is gone.** It was seeded from AMLBot
+  6702283 (`_notes/seed-privacy-flows.mjs`); the series is now chain-derived end
+  to end. The prefix was *not* contaminated (published 2025-05 $81.4M vs $79.8M
+  on-chain, -2.0%) — it was dropped so the whole series has one definition.
 
 ## Fiat-rails baseline
 
@@ -185,13 +151,12 @@ public data URL**. So both are appended by hand.
 
 ## Refresh procedure
 
-1. In Dune, open each catalog query and **Run** it. For `railgunTurnover` set
-   `{{since}}` ~3 months back first. Optionally append any new UPI month / Visa
-   quarter to `fiat-rails-series.json` (see **Fiat-rails baseline**) — it's not
-   tied to the refresh cadence, append whenever new figures land.
-2. `bun run fetch-pc-stats` (needs `DUNE_API_KEY` in `.env` for the Dune layer).
-3. Eyeball the log for `[FAIL]` (a dead source — carried forward) and `[STALE]`
-   (a Dune query you forgot to re-Run). **Carry-forward reads only an *earlier*
+1. Nothing to do by hand. Optionally append any new UPI month / Visa quarter to
+   `fiat-rails-series.json` (see **Fiat-rails baseline**) — it's not tied to the
+   refresh cadence, append whenever new figures land.
+2. `bun run fetch-pc-stats` — fully keyless; there is no key to set.
+3. Eyeball the log for `[FAIL]` (a dead source — carried forward).
+   **Carry-forward reads only an *earlier*
    dated folder, and the first run of the day deletes it** — so a same-day rerun
    silently drops every series that fails, and the Railgun suffix loses its
    prefix. Fix the source, don't rerun; or restore from git (`HEAD:raw/<old>/`).
@@ -202,13 +167,21 @@ public data URL**. So both are appended by hand.
 
 - **x402 / market / TVL series** — `stats.updated` advanced to today; spot-check
   no series collapsed to a flat line (a scrape that silently broke).
-- **Railgun** suffix vs AMLBot 6702283 de-cumulated → ~0.03% on complete months.
-- **Tornado** vs 6702295 de-cumulated → 1.000 on complete months.
-- **Privacy Pools** magnitude ~single-digit-million/mo, lifetime ~$27M.
-- **Blacklist counts** cumulative: USDC ≈ 660 (Eth 639 + Sol 21), USDT ≈ 10,326
-  (Eth 2,972 + Tron 7,329 + Sol 25) at 2026-06-13; 907 / 11,567 at 2026-09-15,
-  Solana frozen at 2026-05 (its query times out). Grows over time.
-- **Blacklist value** (Ethereum snapshot): ~$120M USDC / ~$1.6B USDT.
+- **Privacy-layer flows** — each series should *extend*, not jump: compare the
+  new `dune-privacy-flows.json` against the previous folder's and check that
+  months before the current one are **unchanged**. They are recomputed from a
+  cache that only grows, so a shifted past month means the reader changed
+  behaviour, not that the chain did.
+- **Railgun/Tornado/PP scope tells** — Railgun months in the tens of millions
+  across 3 chains, Tornado whole-numbered (denomination x count, so a month
+  ending in cents is a bug), PP the smallest of the three. A protocol that drops
+  to zero is a failed chain, not a quiet month: all of Railgun's chains must
+  succeed or the run fails.
+- **Blacklist value / counts** — no fixed figures here on purpose. Both are
+  cumulative and both moved when the reader changed (Dune's June USDT $1.60B was
+  ~$718M high; Solana left the counts in 2026-09), so a named number here goes
+  stale and then reads as a failure. Check direction and continuity instead:
+  values advance, counts never decrease, neither jumps by orders of magnitude.
 - **Fiat rails** (if appended): both per-day lines land near the **fiat ceiling
   ≈0.8B tx/day** (Jun-quarter 2026 Visa ~788M; Aug 2026 UPI ~791M). UPI ≫ Visa per-day only
   recently; both dwarf every privacy/agent line by 3+ orders of magnitude — that
@@ -218,9 +191,10 @@ public data URL**. So both are appended by hand.
 
 - **Non-Dune source:** add a `fetch*` + a `safe(...)` entry in the Promise.all,
   a write/`carryForward` block, and a row to the Sources table above.
-- **Dune query:** edit/add the `.sql` in `queries/` (canonical) and mirror it
-  into the Dune editor (Run, Save). Add the id to `DUNE_QUERIES` (comment: shape
-  + file), a key-guarded `safe(...)` fetch, an assembly step, carry-forward.
-  Write the row-mapper **only after** a real Run exists (probe columns via the
-  API first — forked/new queries have no knowable columns up front). Add a
-  validation cross-check. Update the catalog table here.
+- **On-chain reader:** add a `scripts/<name>.js` exporting `fetch<Name>(cacheFile)`
+  over `evm-logs.js`, a `cache/<name>.json`, a `safe(...)` entry in the
+  Promise.all, a write/`carryForward` block, and a row in the Sources table.
+  **Check it against `baselines/dune-2026-09-15/` before trusting it**, and
+  record what matched — a script running without error verifies nothing.
+- **Dune is retired.** Don't add a query; the free plan is view-only and the
+  Plus trial lapses ~2026-09-24. `queries/*.sql` stay as history only.
