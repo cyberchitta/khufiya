@@ -44,12 +44,12 @@ bun run fetch-pc-stats        # scripts/fetch-privacy-coin-stats.js, run in khuf
 | **x402scan** tRPC `public.stats.overall` + `.bucketed` | x402 snapshot + `x402-series.json` | unofficial/unversioned — schema pinned to github.com/Merit-Systems/x402scan. Bucketed = daily buckets for full history; partial current day dropped |
 | **Blockchair** `/{monero,zcash}/stats` | chain stats in `snapshots.json` | keyless 1,440/day. Monero has no `transactions_24h`; ZEC `circulation` field is broken — **never use** |
 | **ZecHub** raw JSON (ZecHub/zechub-wiki `public/data/zcash/`) | `zcash-series.json` (shielded supply + shielded tx/day) | ~daily commits; dates MM/DD/YYYY with stray ISO rows. **Pools are read from the file's keys, not hardcoded** — Ironwood (NU6.3, 2026-07-28) arrived as a fourth key and a fixed Sprout/Sapling/Orchard list undercounted shielded tx ~5× until 2026-09-15. **Best free source for ZEC shielded data** — checked 2026-06-13: Dune doesn't index Zcash; Coin Metrics keeps shielded metrics Pro-only (community tier has none). **`fetchZcashSeries` splices** the long history: `transaction_summary.json` (Sapling+Orchard counts keyed by block *height*, back to Sapling activation ~Oct 2018) for the prefix, height→date mapped via `blockFeesZEC.json` (which carries Block+Date anchors, ~1-day accuracy), then the precise date-native `shieldedtxcount.json` for the recent tail. Tail's first row (2024-09-05) is an anomalous seed value (orchard 0, sapling ~2×) — harmless, the chart's 30-day smoothing washes it out. shielded *supply* (`shielded_supply.json`) is full from 2017. |
-| **bitinfocharts** scrape (6 pages) | `market-series.json` (XMR/ZEC price+mcap, BTC tx/day) + `monero-tx-series.json` (XMR tx/day + avg fee) | **fragile** — regex on page JS; sanity-checks ≥1000 pts, fails soft; intraday current-day point dropped |
-| **CoinGecko** keyless | current prices, mcaps, privacy-coins category, global (snapshot) | ~30/min, rate-limits on rapid reruns. **History capped at 365d** — why market history rides bitinfocharts |
+| **bitinfocharts** scrape (5 pages) | `market-series.json` (XMR/ZEC price, **XMR mcap only**, BTC tx/day) + `monero-tx-series.json` (XMR tx/day + avg fee) | **fragile** — regex on page JS; sanity-checks ≥1000 pts, fails soft; intraday current-day point dropped |
+| **CoinGecko** keyless | current prices, mcaps, privacy-coins category, global (snapshot) | ~30/min, rate-limits on rapid reruns. **History capped at 365d** — why market history rides bitinfocharts. Feeds `snapshots.json`, which since 2026-09-16 **nothing on the site reads at build time** — it is the committed record for a reader reproducing the numbers, not a page input |
 | **Coin Metrics** community API | `stablecoin-series.json` (USDT/USDC tx/day) | keyless; `usdt`/`usdc` are cross-chain aggregates; paginated `paging_from=start`, page cap as runaway guard |
 | **DefiLlama** `/protocol/<slug>` | `onchain-privacy-series.json` (TVL railgun/tornado-cash/privacy-pools) | keyless, full daily history |
-| **on-chain flow readers** (keyless) | `dune-privacy-flows.json` | Railgun (`railgun-flows.js`, Eth+Polygon+Arbitrum), Tornado (`tornado-flows.js`), Privacy Pools (`privacy-pools-flows.js`). File name kept from the Dune era — it is the site's input contract. See **Privacy-layer flows** below |
-| **on-chain readers** (keyless) | `dune-base-freeze.json`, `dune-blacklist.json` | Base + Ethereum via `evm-logs.js`, Tron via TronGrid; file names kept from the Dune era because they are the site's input contract |
+| **on-chain flow readers** (keyless) | `privacy-flows.json` | Railgun (`railgun-flows.js`, Eth+Polygon+Arbitrum), Tornado (`tornado-flows.js`), Privacy Pools (`privacy-pools-flows.js`). See **Privacy-layer flows** below |
+| **on-chain readers** (keyless) | `base-freezes.json`, `stablecoin-blacklist.json` | Base + Ethereum via `evm-logs.js`, Tron via TronGrid |
 | **fiat rails** (hand-maintained seed) | `fiat-rails-series.json` (UPI monthly volume + Visa quarterly processed tx → the chart's "fiat ceiling") | **not fetched** — see **Fiat-rails baseline** below |
 
 `events.json` (the timeline) is **hand-curated, top-level, never written by the
@@ -65,10 +65,15 @@ it into each dated folder so it caches/resolves like the fetched series. See
 
 **No Dune query feeds anything any more.** The last three (7714782 Railgun,
 7714895 Tornado, 7714910 Privacy Pools) were replaced by on-chain readers on
-2026-09-16; `queries/*.sql` and `_notes/DUNE-SETUP.md` are kept only as history,
+2026-09-16. **The three output files were named `dune-*.json` until 2026-09-16**
+— if you are reading an older folder, `privacy-flows.json` was
+`dune-privacy-flows.json`, `base-freezes.json` was `dune-base-freeze.json`, and
+`stablecoin-blacklist.json` was `dune-blacklist.json`. The `{ columns, rows }`
+shape inside them is unchanged and is still the contract.
+ `queries/*.sql` and `_notes/DUNE-SETUP.md` are kept only as history,
 and `baselines/dune-2026-09-15/` is what the readers were checked against.
 
-All three write `dune-privacy-flows.json` as **full history off their own event
+All three write `privacy-flows.json` as **full history off their own event
 cache in `cache/`** — no prefix to splice, no `{{since}}` to tune, nothing to
 re-Run by hand before a refresh. Commit the caches with the refresh.
 
@@ -170,7 +175,7 @@ public data URL**. So both are appended by hand.
 - **x402 / market / TVL series** — `stats.updated` advanced to today; spot-check
   no series collapsed to a flat line (a scrape that silently broke).
 - **Privacy-layer flows** — each series should *extend*, not jump: compare the
-  new `dune-privacy-flows.json` against the previous folder's and check that
+  new `privacy-flows.json` against the previous folder's and check that
   months before the current one are **unchanged**. They are recomputed from a
   cache that only grows, so a shifted past month means the reader changed
   behaviour, not that the chain did.

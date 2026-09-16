@@ -79,8 +79,12 @@ const CHAINS = {
 
 // Full history: each chain is scanned from before Railgun's first stablecoin
 // flow there, so the whole series is chain-derived. The old repo-cached prefix
-// (seeded from AMLBot 6702283) is NOT used — it carried Dune's symbol-join
-// contamination, including ~302M of counterfeit "DAI" in 2025-05.
+// (seeded from AMLBot 6702283) is NOT used — dropped so the whole series has
+// one definition, NOT because it was contaminated. Checked 2026-09-16: it was
+// clean. The counterfeit "DAI" moved ~302M in 2025-05, but AMLBot's query did
+// not match it — published 2025-05 was $81.4M against $79.8M on-chain (-2.0%),
+// where carrying the counterfeit would have exceeded the chain by ~302M. See
+// the header note; an earlier version of this comment claimed the opposite.
 const SCAN_FROM = { ethereum: 11_000_000, polygon: 15_000_000, arbitrum: 1_000_000 };
 
 // Transfer(address indexed from, address indexed to, uint256 value)

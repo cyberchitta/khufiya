@@ -32,9 +32,10 @@ import { fetchRailgunFlows } from './railgun-flows.js';
 //                         (bitinfocharts scrape — fragile, unofficial; amounts
 //                         are hidden by design, tx count and fees are the
 //                         public on-chain activity proxies)
-//   market-series.json    full daily price + market-cap history for XMR/ZEC
-//                         (bitinfocharts scrape; CoinGecko's public API caps
-//                         history at 365 days)
+//   market-series.json    full daily price history for XMR/ZEC + market-cap
+//                         history for XMR only (bitinfocharts scrape;
+//                         CoinGecko's public API caps history at 365 days).
+//                         ZEC market cap is NOT here — see fetchMarketSeries.
 //   stablecoin-series.json
 //                         full daily USDT/USDC tx-count history (Coin Metrics
 //                         community API) — the transparent-stablecoin rail is
@@ -51,18 +52,30 @@ import { fetchRailgunFlows } from './railgun-flows.js';
 //                         page has no clean data URL; the canonical copy lives in
 //                         this repo at data/fiat-rails-series.json and is copied
 //                         into each folder so it caches like the rest.
-//   dune-privacy-flows.json / dune-base-freeze.json / dune-blacklist.json
-//                         OPTIONAL, keyed (DUNE_API_KEY); absent on keyless runs.
+//   privacy-flows.json / base-freezes.json / stablecoin-blacklist.json
+//                         Keyless and on-chain, like everything else here. These
+//                         were named dune-*.json until 2026-09-16; renamed once
+//                         the last Dune query was retired, because the old names
+//                         told a reader of the site repo that the data came from
+//                         a vendor that no longer supplies any of it.
+//                         (queries/*.sql and _notes/DUNE-SETUP.md survive as
+//                         history; baselines/dune-2026-09-15/ is what the readers
+//                         were checked against.)
 //                         privacy-flows: per-protocol per-month stablecoin
-//                         turnover (railgun suffix + repo-cached prefix; tornado
-//                         + PP full). base-freeze: USDC Blacklisted events on
-//                         Base (on-chain, keyless — base-usdc-freezes.js).
+//                         turnover, each reader computing FULL history off its
+//                         own growing cache in cache/ — no prefix, no splice.
+//                         Railgun is Ethereum+Polygon+Arbitrum (BNB dropped,
+//                         owner decision — no keyless BSC archive), Tornado and
+//                         PP are Ethereum. Stablecoins are matched BY CONTRACT
+//                         ADDRESS, never by symbol; a symbol join is what let
+//                         counterfeits inflate the old Railgun and PP numbers.
+//                         base-freeze: USDC Blacklisted events on Base
+//                         (base-usdc-freezes.js).
 //                         blacklist: USDC/USDT blacklist counts (monthly) +
 //                         Ethereum frozen-value snapshot. Ethereum both, on-chain
 //                         (eth-stablecoin-blacklist.js); Tron USDT via TronGrid
 //                         (tron-usdt-blacklist.js). Solana is out of scope —
 //                         see the blacklist assembly below.
-//                         See _notes/DUNE-SETUP.md
 //
 // The event timeline is hand-curated as a markdown table in the article
 // (src/articles/private-canary.md, rendered by showtable/pc-timeline.ejs) and
@@ -326,11 +339,16 @@ async function fetchMoneroSeries() {
 async function fetchMarketSeries() {
   const series = {};
   for (const id of ['monero', 'zcash']) {
-    series[id] = {
-      priceUsd: await fetchBitinfochartsSeries(`${id}-price`),
-      marketCapUsd: await fetchBitinfochartsSeries(`${id}-marketcap`),
-    };
+    series[id] = { priceUsd: await fetchBitinfochartsSeries(`${id}-price`) };
   }
+  // Market-cap history is Monero-only on purpose. The zcash-marketcap page
+  // stopped updating 2026-07-18 and the breakage was invisible for two months
+  // because nothing read the field — and, checked 2026-09-16, THE PAGE SHOWS NO
+  // ZEC MARKET CAP AT ALL: the only market-cap series charted is xmrMcap (see
+  // derive-pc-series.js), and ZEC market cap appears on the page once, as prose
+  // in a 2025 timeline entry. Dropped rather than repaired — one fewer fragile
+  // scrape. (XMR market cap IS charted, so its page stays.)
+  series.monero.marketCapUsd = await fetchBitinfochartsSeries('monero-marketcap');
   series.bitcoinTxPerDay = await fetchBitinfochartsSeries('bitcoin-transactions');
   return series;
 }
@@ -512,7 +530,8 @@ async function main() {
   }
   if (marketSeries) {
     await writeData(folder, 'market-series.json', {
-      source: 'https://bitinfocharts.com/comparison/{monero,zcash}-{price,marketcap}.html + bitcoin-transactions.html',
+      source:
+        'https://bitinfocharts.com/comparison/{monero,zcash}-price.html + monero-marketcap.html + bitcoin-transactions.html',
       fetchedAt: now,
       ...marketSeries,
     });
@@ -533,16 +552,17 @@ async function main() {
   // copied into the folder each run (see fiat-rails-series.json header above).
   await seedForward(folder, prevFolder, 'fiat-rails-series.json');
 
-  // Dune series: persist each query result verbatim (columns + rows). Build-time
-  // shaping into chart series happens in pcData.js against these real columns.
+  // The three outputs below are read on-chain, not queried. They keep the Dune
+  // era's { columns, rows } SHAPE on purpose — countColumn() here and
+  // derive-pc-series.js in the site key on those columns, so the shape is still
+  // the contract even though the source, and now the filenames, are gone.
 
   // Privacy-layer flows — per-month gross stablecoin turnover by protocol, now
   // read on-chain (no Dune). Each reader returns FULL history off its own event
   // cache, so there is no prefix to splice and no mergeMonthly(): a protocol
   // that fetched replaces its series outright, and one that failed keeps the
-  // carried-forward copy. File name kept from the Dune era — it is the site's
-  // input contract. pcData.js cumulates these for the chart.
-  const prevFlows = await readExisting(prevFolder, 'dune-privacy-flows.json', { protocols: {} });
+  // carried-forward copy.
+  const prevFlows = await readExisting(prevFolder, 'privacy-flows.json', { protocols: {} });
   const flowResults = { railgun: railgunFlows, tornado: tornadoFlows, privacyPools: privacyPoolsFlows };
   const protocols = {};
   for (const [name, result] of Object.entries(flowResults)) {
@@ -554,32 +574,31 @@ async function main() {
     }
   }
   if (Object.keys(protocols).length) {
-    await writeData(folder, 'dune-privacy-flows.json', {
+    await writeData(folder, 'privacy-flows.json', {
       source:
         'On-chain — per-month gross stablecoin turnover by privacy protocol. Railgun: Ethereum+Polygon+Arbitrum transfers (BNB out of scope, no keyless archive route). Tornado: Deposit/Withdrawal events x instance denomination. Privacy Pools: stablecoin transfers, matched by contract address not symbol.',
       fetchedAt: now,
       protocols,
     });
   } else {
-    await carryForward(prevFolder, folder, 'dune-privacy-flows.json');
+    await carryForward(prevFolder, folder, 'privacy-flows.json');
   }
 
   if (baseFreezes) {
-    // File name kept from the Dune era: it is the site's input contract.
-    await writeData(folder, 'dune-base-freeze.json', {
+    await writeData(folder, 'base-freezes.json', {
       source: 'Base chain — USDC (0x8335…2913) Blacklisted events, read on-chain',
       fetchedAt: now,
       ...baseFreezes,
     });
   } else {
-    await carryForward(prevFolder, folder, 'dune-base-freeze.json');
+    await carryForward(prevFolder, folder, 'base-freezes.json');
   }
 
   // Blacklist (taint backdrop, §7): counts = monthly new blacklisted/frozen
   // addresses summed across chains (full history → replace); value = current
   // frozen balance of still-blacklisted addresses (Ethereum-only, on-chain).
   // Each part keeps the previous folder's copy if not fetched this run.
-  const prevBlacklist = await readExisting(prevFolder, 'dune-blacklist.json', {});
+  const prevBlacklist = await readExisting(prevFolder, 'stablecoin-blacklist.json', {});
   const blacklist = {
     source:
       'Stablecoin blacklist counts — USDC: Ethereum; USDT: Ethereum + Tron. Ethereum read on-chain, Tron via TronGrid. Solana is excluded: its freezes are SPL FreezeAccount instructions with no log index, and no keyless source serves the history (see the runbook). Ethereum frozen value read on-chain (balanceOf of still-blacklisted addresses).',
@@ -611,9 +630,9 @@ async function main() {
     blacklist.value = prevBlacklist.value;
   }
   if (blacklist.counts || blacklist.value) {
-    await writeData(folder, 'dune-blacklist.json', blacklist);
+    await writeData(folder, 'stablecoin-blacklist.json', blacklist);
   } else {
-    await carryForward(prevFolder, folder, 'dune-blacklist.json');
+    await carryForward(prevFolder, folder, 'stablecoin-blacklist.json');
   }
 
   const latestShieldedSupply = last(zcashSeries?.shieldedSupply);
