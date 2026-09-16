@@ -90,8 +90,10 @@ single most important thing here. Dune joined `tokens.erc20` on
   ($1,318.68, 2026-03) were the entire difference from 7714910.
 
 The symbol join also **excluded** real flow, because a token can be renamed out
-of the filter: Polygon USDT now reports `USDT0`, and bridged `USDC.e` on Polygon
-and Arbitrum upper-cases to `USDC.E`. All three are counted by address here.
+of the filter: Polygon USDT reports its symbol as `USDT0`. The bridged "USDC.e"
+tokens are **not** an instance of this — checked 2026-09-16, both return plain
+`USDC` from `symbol()`, so Dune matched them; `USDC.e` is their common name, not
+their on-chain symbol. Everything is counted by address here regardless.
 
 **Per-reader notes**
 

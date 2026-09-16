@@ -10,13 +10,17 @@ import { makeRpc, scanLogs } from './evm-logs.js';
 // ('USDC','USDT','DAI')`, and 0x12d9fe4c… — a counterfeit whose symbol is
 // literally "DAI" — moved 110,980,202 units through the Ethereum contract in 6
 // transfers in 2026-08. Dune reports that month as $177,925,658; the canonical
-// stablecoins give $67,360,458. The same token put ~302M into 2025-05, which
-// falls inside the repo-cached prefix, so the prefix carries it too.
+// stablecoins give $67,360,458. The same token also moved ~302M in 2025-05,
+// which falls inside the old repo-cached prefix — but the prefix did NOT carry
+// it (published 2025-05 was $81.4M against $79.8M on-chain, -2.0%; AMLBot's
+// query did not match that token). The published contamination was 2026-08.
 //
 // The symbol join also EXCLUDES real flow, because a token can be renamed out
-// of the filter: Polygon USDT now reports `USDT0`, and the bridged USDC.e on
-// Polygon and Arbitrum upper-cases to `USDC.E`. Both are included below — they
-// are the canonical bridged/native stablecoins on those chains.
+// of the filter: Polygon USDT reports its symbol as `USDT0`. (The bridged
+// "USDC.e" tokens are NOT an instance of this — checked 2026-09-16, both
+// 0x2791bc… on Polygon and 0xff970a… on Arbitrum return plain `USDC` from
+// symbol(), so Dune matched them. USDC.e is their common name, not their
+// on-chain symbol.) All of them are included below, by address.
 
 // BNB IS OUT OF SCOPE (owner decision, 2026-09-16). Railgun is read on
 // Ethereum + Polygon + Arbitrum only, which is >=~98% of its stablecoin
@@ -54,8 +58,8 @@ const CHAINS = {
     concurrency: 2,
     tokens: {
       '0x3c499c542cef5e3811e1192ce70d8cc03d5c3359': 6, // USDC (native)
-      '0x2791bca1f2de4661ed88a30c99a7a9449aa84174': 6, // USDC.e (bridged)
-      '0xc2132d05d31c914a87c6611c10748aeb04b58e8f': 6, // USDT — now reports symbol USDT0
+      '0x2791bca1f2de4661ed88a30c99a7a9449aa84174': 6, // bridged USDC (symbol() is 'USDC'; "USDC.e" is only its common name)
+      '0xc2132d05d31c914a87c6611c10748aeb04b58e8f': 6, // USDT — reports symbol() 'USDT0', so a ticker match drops it
       '0x8f3cf7ad23cd3cadbd9735aff958023239c6a063': 18, // DAI
     },
   },
@@ -66,7 +70,7 @@ const CHAINS = {
     concurrency: 2,
     tokens: {
       '0xaf88d065e77c8cc2239327c5edb3a432268e5831': 6, // USDC (native)
-      '0xff970a61a04b1ca14834a43f5de4533ebddb5cc8': 6, // USDC.e (bridged)
+      '0xff970a61a04b1ca14834a43f5de4533ebddb5cc8': 6, // bridged USDC (symbol() is 'USDC'; "USDC.e" is only its common name)
       '0xda10009cbd5d07dd0cecc66161fc93d7c9000da1': 18, // DAI
       '0xfd086bc7cd5c481dcc9c85ebe478a1c0b69fcbb9': 6, // USDT
     },
