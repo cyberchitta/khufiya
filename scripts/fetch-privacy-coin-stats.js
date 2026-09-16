@@ -8,6 +8,7 @@ import { fetchBaseFreezes } from './base-usdc-freezes.js';
 import { fetchTornadoFlows } from './tornado-flows.js';
 import { fetchPrivacyPoolsFlows } from './privacy-pools-flows.js';
 import { fetchRailgunFlows } from './railgun-flows.js';
+import { x402PeakStats } from './x402-peak.js';
 
 // Fetches the tracked statistics for the privacy-coins-ai-money prediction
 // tracker page. All sources are free/keyless. Each fetcher is fail-soft: a
@@ -25,7 +26,9 @@ import { fetchRailgunFlows } from './railgun-flows.js';
 //
 // Folder contents:
 //   snapshots.json        append-only daily snapshots of point-in-time metrics
-//                         (x402scan, Blockchair chain stats, CoinGecko market data)
+//                         (x402scan, Blockchair chain stats, CoinGecko market data).
+//                         x402.belowPeak is derived here from x402-series.json —
+//                         the article's "% below peak" reads it (see x402-peak.js).
 //   x402-series.json      full daily x402 tx/volume/buyers/sellers history
 //                         (x402scan tRPC public.stats.bucketed)
 //   monero-tx-series.json full daily tx-count + avg-fee-USD history
@@ -642,7 +645,11 @@ async function main() {
   const snapshot = {
     date: today,
     fetchedAt: now,
-    x402: x402AllTime && { allTime: x402AllTime, trailing30d: x402Trailing30d },
+    x402: x402AllTime && {
+      allTime: x402AllTime,
+      trailing30d: x402Trailing30d,
+      belowPeak: x402Series ? x402PeakStats(x402Series) : undefined,
+    },
     monero: moneroChain && {
       txCumulative: moneroChain.transactions,
       txPerDay: latestMoneroTx && { date: latestMoneroTx[0], count: latestMoneroTx[1] },

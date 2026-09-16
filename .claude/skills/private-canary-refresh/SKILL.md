@@ -33,7 +33,13 @@ bun run fetch-pc-stats        # scripts/fetch-privacy-coin-stats.js, run in khuf
   run (overwrite), so a normal refresh is "yesterday + today's point" plus any
   upstream revisions.
 - **`snapshots.json` is append-only**, one entry per UTC day — a refresh adds
-  today's entry on top of the history, never rewrites past days.
+  today's entry on top of the history, never rewrites past days. Each entry's
+  `x402.belowPeak` is derived from `x402-series.json` by `scripts/x402-peak.js`:
+  trailing-30-day tx total at the last full day vs. the highest such total in
+  the history, with both window ends. **The article's "N% below the peak" is
+  read from here, never hand-computed** — the 2026-09-15 refresh wrote 56%/92%
+  by hand on a peak window nobody recorded; the definition here gives 62%/93%,
+  and the article's Data Sources states it.
 - **Keyless throughout.** Every source is keyless as of 2026-09-16 — there is no
   API key anywhere in the refresh, and no `.env` is needed.
 
@@ -169,6 +175,9 @@ public data URL**. So both are appended by hand.
    prefix. Fix the source, don't rerun; or restore from git (`HEAD:raw/<old>/`).
 4. Verify the cross-checks below, then `bun run build` in the site repo + commit
    in both repos (human-gated).
+   When the reading's x402 sentence is rewritten, take the percentage from the
+   new snapshot's `x402.belowPeak.belowPeakPct` and the window end from
+   `current.windowEnd`.
 5. **Re-survey the qualitative claims** — see below. The page carries three
    claims no script touches; a numbers-only refresh silently ages them.
 
@@ -218,6 +227,9 @@ the old one.
 
 - **x402 / market / TVL series** — `stats.updated` advanced to today; spot-check
   no series collapsed to a flat line (a scrape that silently broke).
+- **x402 `belowPeak`** — `peak.windowEnd` should still read `2025-12-12` with
+  `txCount` 75,763,356 unless x402 has genuinely set a new 30-day high; a moved
+  peak with a flat chart means the series rows changed under it.
 - **Privacy-layer flows** — each series should *extend*, not jump: compare the
   new `privacy-flows.json` against the previous folder's and check that
   months before the current one are **unchanged**. They are recomputed from a
