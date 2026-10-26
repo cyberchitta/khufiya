@@ -16,6 +16,10 @@ comes from.
   with the refresh.
 - `baselines/` — reference results an on-chain reader must reproduce.
 
+## Code style
+
+Code follows the global `code-style` and `javascript-style` skills; load them before writing code.
+
 ## Working notes
 
 `_notes/` → `working-notes/khufiya` (gitignored symlink). **AI-maintained, not
